@@ -1,0 +1,5 @@
+{
+  "nav": "Token 用量",
+  "title": "Token 用量",
+  "subtitle": "按本机时区统计每次模型调用的 token 消耗，数据来自会话日志。"
+}

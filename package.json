@@ -1,0 +1,51 @@
+{
+  "name": "dsh-token-usage",
+  "version": "1.0.0",
+  "private": false,
+  "type": "module",
+  "description": "Token usage dashboard for DeepSeek Harness: records every model call from the session log, buckets by local day, and shows a block wall (one block per 10M tokens), per-workspace / per-model / per-vendor breakdowns, and a floating pet.",
+  "icon": "./icon.svg",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "lib",
+    "locale",
+    "icon.svg",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-ui-conversation"
+      ]
+    }
+  },
+  "scripts": {
+    "test": "npm run check && npm run test:unit && npm run test:client && npm run test:host",
+    "test:unit": "node --test test/fold.test.mjs && node --test test/blocks.test.mjs && node --test test/prefs.test.mjs && node --test test/models.test.mjs",
+    "test:client": "node test/client.smoke.mjs && node test/odometer.text.mjs && node test/sparkline.test.mjs && node test/blocks-cross.test.mjs && node test/distribution.test.mjs",
+    "test:host": "node test/host.routes.test.mjs",
+    "test:data": "node test/cross-validate.mjs \"$DSH_HOME/sessions\" && node test/store.e2e.mjs \"$DSH_HOME/sessions\"",
+    "visual": "node tools/visual-check.mjs",
+    "check": "node --check index.js && node --check client.js && node --check lib/fold.js && node --check lib/store.js && node --check lib/collect.js && node --check lib/blocks.js && node --check lib/models.js && node --check lib/prefs.js && node --check tools/check-stray-backticks.mjs && node tools/check-stray-backticks.mjs index.js client.js tools/visual-check.mjs"
+  },
+  "meta": {
+    "title": "Token 用量",
+    "description": "按本机时区统计每次模型调用的 token 消耗，支持历史回填、任意区间汇总，以及每 10M 一格的方块墙。"
+  },
+  "license": "MIT"
+}

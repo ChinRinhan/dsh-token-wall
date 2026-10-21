@@ -1,0 +1,5 @@
+{
+  "nav": "Token Usage",
+  "title": "Token Usage",
+  "subtitle": "Token spend per model call, bucketed in your local timezone from the session log."
+}

@@ -1,0 +1,20 @@
+# 统一换行符：仓库里一律 LF，检出时按平台自动转换。
+#
+# 不加这个文件的话，Windows 上提交会带 CRLF，别人在 macOS/Linux 克隆后
+# 整个文件显示「被修改」（其实只是换行符不同），diff 噪音很大。
+* text=auto eol=lf
+
+# 这些是二进制，不要做任何换行转换。
+*.png binary
+*.jpg binary
+*.gif binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+
+# 明确语言标记（GitHub 语言统计更准）。
+*.js text eol=lf
+*.mjs text eol=lf
+*.json text eol=lf
+*.yml text eol=lf
+*.md text eol=lf

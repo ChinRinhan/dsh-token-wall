@@ -1,0 +1,19 @@
+# 依赖
+node_modules/
+
+# 构建产物 / 验证输出（visual-check 生成的 HTML 与截图）
+tools/out/
+
+# 日志
+*.log
+npm-debug.log*
+
+# 编辑器 / 系统
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# 本地私有数据（若有人把 DSH home 指到仓库里）
+.dsh-home/
+token-usage/
