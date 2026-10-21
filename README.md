@@ -23,7 +23,7 @@ Token 用量看板插件，用于 DSH（DeepSeek Harness）。
 # <profile> 通常是 ~/.dsh/profiles/<名字>
 # Windows: %USERPROFILE%\.dsh\profiles\<名字>
 cd ~/.dsh/profiles/<profile>/node_modules
-git clone https://github.com/ChinRinhan/RedStar_ChinRinhan_Official.git dsh-token-usage
+git clone https://github.com/ChinRinhan/dsh-token-usage.git
 ```
 
 然后在 profile 的 `cordis.patch.yml` 里插入本 bundle（或直接用方式二让 DSH 自己写）。
