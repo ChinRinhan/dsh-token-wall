@@ -14,7 +14,30 @@ import { join } from 'node:path'
 import { zstdDecompressSync } from 'node:zlib'
 
 import { collectSessionEntries } from '../lib/collect.js'
+import { seedPrefixOf } from '../lib/adapter.js'
 import { foldEntries, grandTotals, localDayKey } from '../lib/fold.js'
+
+/**
+ * **独立**复算继承前缀（B 侧自己写一遍，不复用生产代码）。
+ *
+ * 两代口径并存：持久化 header 的 `seedLength`（新）与日志里的
+ * `session/end-seed` 事件（也新，是 seed 边界的投影）。都没有 ⇒ 0。
+ *
+ * ⚠️ 早先这里是硬编码 `inheritedEventCount: 0`，等于假设「没有 fork」。
+ * 在真实语料里恰好没有 seeded 会话，所以测试一直绿——而那个假设本身是错的。
+ */
+function seedBoundaryOf(header, events) {
+  if (typeof header?.seedLength === 'number' && Number.isFinite(header.seedLength)) {
+    return Math.max(0, Math.trunc(header.seedLength))
+  }
+  let last = -1
+  for (const e of events) {
+    if (e?.type !== 'session/end-seed') continue
+    const seq = Number(e.seq)
+    if (Number.isFinite(seq) && seq > last) last = seq
+  }
+  return last >= 0 ? last + 1 : 0
+}
 
 const MAGIC = Buffer.from([0x28, 0xb5, 0x2f, 0xfd])
 
@@ -112,11 +135,12 @@ for (const [dir, info] of logs) {
   sessionsA += 1
 
   // ── A：走生产代码 ──
+  const seedPrefix = seedPrefixOf({ header, events })
   const collected = collectSessionEntries({
     sessionId,
     header,
     events,
-    inheritedEventCount: 0,
+    inheritedEventCount: seedPrefix,
     watermark: watermarks.get(sessionId),
   })
   foldEntries(daysA, collected.entries)
@@ -128,7 +152,11 @@ for (const [dir, info] of logs) {
   }
 
   // ── B：独立复算（只看两种事件类型，直接累加）──
+  // 继承前缀用本文件自己算的 seedBoundaryOf，不复用生产代码——两边口径一致
+  // 但实现独立，任何一方漏掉 seed 边界都会在这里对不上。
+  const seedBoundary = seedBoundaryOf(header, events)
   for (const ev of events) {
+    if ((Number(ev.seq) || 0) < seedBoundary) continue
     const u = ev.data?.usage
     if (u === null || typeof u !== 'object' || u === undefined) continue
     const isChat = ev.type === 'assistant/message'

@@ -76,6 +76,10 @@ window.__ModuleLoader__.load({
       storePath: '存储位置',
       memoryOnly: '仅内存（未找到 DSH home）',
       notBackfilled: '尚未回填',
+      backfillDegraded: '回填降级',
+      backfillDegradedHint: '读数可能偏低：宿主接口与插件预期不一致',
+      hostApi: '宿主接口',
+      hostApiMissing: '不可用',
       rangePreset7: '近 7 天',
       rangePreset30: '近 30 天',
       rangePreset90: '近 90 天',
@@ -170,6 +174,10 @@ window.__ModuleLoader__.load({
       storePath: 'Store',
       memoryOnly: 'Memory only (DSH home not found)',
       notBackfilled: 'Not yet backfilled',
+      backfillDegraded: 'Backfill degraded',
+      backfillDegradedHint: 'Numbers may be low: host API does not match what the plugin expects',
+      hostApi: 'Host API',
+      hostApiMissing: 'unavailable',
       rangePreset7: 'Last 7 days',
       rangePreset30: 'Last 30 days',
       rangePreset90: 'Last 90 days',
@@ -1120,21 +1128,41 @@ window.__ModuleLoader__.load({
       )
     }
 
-    /** 诊断区：把「回填了多少、存储在哪」如实摆出来，便于判断数字可不可信。 */
+    /**
+     * 诊断区：把「回填了多少、存储在哪、宿主接口长什么样」如实摆出来，
+     * 便于判断数字可不可信。
+     *
+     * ⚠️ `degraded` 必须显示在**肉眼可见的位置**（红色错误行）。它是「回填
+     * 认不出宿主接口」的唯一信号——曾经这种情况是静默的：`sessions: 0`
+     * 看起来就像「你本来就没有历史会话」，用户根本不会怀疑数字少了。
+     */
     function Diagnostics({ t, diag, config }) {
       const backfill = diag?.backfill
+      const degraded = typeof backfill?.degraded === 'string' && backfill.degraded !== ''
+        ? backfill.degraded
+        : undefined
       const backfillText = backfill === undefined
         ? t('notBackfilled')
         : `${backfill.sessions} ${t('sessionsWord')} / ${backfill.entries} ${t('entriesWord')} / ${backfill.withUsage} ${t('withUsageWord')}`
       const storePath = diag?.store?.kind === 'file' ? diag.store.path : t('memoryOnly')
+      // 宿主接口实际走的那条路：接口换代时这是第一现场。
+      const iface = diag?.persistence
+      const ifaceText = iface === undefined
+        ? t('hostApiMissing')
+        : `list=${iface.listKind} · read=${iface.readKind}`
       return h(
         'div',
         { className: 'dsh-tu-diag' },
         h('div', null, `${t('sessionsTracked')}: ${grouped(diag?.sessionsTracked)}`),
         h('div', null, `${t('liveEntries')}: ${grouped(diag?.liveEntries)}`),
         h('div', null, `${t('backfill')}: ${backfillText}`),
+        h('div', null, `${t('hostApi')}: `, h('code', null, ifaceText)),
         h('div', null, `${t('storePath')}: `, h('code', null, String(storePath))),
         h('div', null, `keepDays: ${config?.keepDays ?? '—'} · refresh: ${config?.statusBarRefreshMs ?? '—'}ms`),
+        degraded === undefined
+          ? null
+          : h('div', { className: 'dsh-tu-err' },
+            `${t('backfillDegraded')} — ${t('backfillDegradedHint')}: ${degraded}`),
         diag?.backfillError === undefined
           ? null
           : h('div', { className: 'dsh-tu-err' }, `backfill error: ${diag.backfillError}`),
@@ -1145,14 +1173,17 @@ window.__ModuleLoader__.load({
     function SettingsPage(props) {
       const t = props.t
       const [groupBy, setGroupBy] = React.useState('day')
-      const [includeSub, setIncludeSub] = React.useState(true)
-      const [includeAux, setIncludeAux] = React.useState(true)
       const todayKey = localDayKey(Date.now())
       const [from, setFrom] = React.useState(shiftDayKey(todayKey, -29))
       const [to, setTo] = React.useState(todayKey)
 
-      // 运行时开关（横幅 / 桌宠 / 主面板）。
+      // 运行时开关（横幅 / 桌宠 / 主面板 / 统计口径）。
       const prefs = usePrefs()
+      // ⚠️ 统计口径**不再是**组件 state：它必须持久化，并与 `/today` 共用同一份
+      // 值。早先这里是 `useState(true)`，于是离开设置页就回默认，而且方块墙
+      // 读的 `/today` 压根不看它——两处口径必然打架。
+      const includeSub = prefs.includeSub !== false
+      const includeAux = prefs.includeAux !== false
       const [savingPrefs, setSavingPrefs] = React.useState(false)
       /**
        * 改开关：先本地生效（立刻响应），再 PUT 到 host 存盘。
@@ -1275,18 +1306,21 @@ window.__ModuleLoader__.load({
 
         // 两个过滤开关：分别对应 scope（谁发起的）与 kind（是不是辅助调用），
         // 两维正交，所以各给一个开关。
+        //
+        // ⚠️ 走 `setPref`（存 prefs.json）而不是组件 state：这两个口径会影响
+        // 方块墙、桌宠、横幅的累计读数，必须是全局且持久的。
         h('div', { className: 'dsh-tu-toolbar' },
           h('label', { className: 'dsh-tu-check' },
             h('input', {
               type: 'checkbox', checked: includeSub,
-              onChange: (e) => setIncludeSub(e.target.checked),
+              onChange: () => setPref('includeSub'),
             }),
             h('span', null, t('includeSub')),
           ),
           h('label', { className: 'dsh-tu-check' },
             h('input', {
               type: 'checkbox', checked: includeAux,
-              onChange: (e) => setIncludeAux(e.target.checked),
+              onChange: () => setPref('includeAux'),
             }),
             h('span', null, t('includeAux')),
           ),
@@ -1331,7 +1365,9 @@ window.__ModuleLoader__.load({
       const t = locale.t
       // 轮询间隔由 host 配置决定；默认 1 秒（用户选的实时档）。
       const [pollMs, setPollMs] = React.useState(1000)
-      const { data } = useJson(`${ROUTE_PREFIX}/today`, { pollMs })
+      // 统计口径与设置页 / 方块墙共用（见 todayQuery 的说明）。
+      const prefs = usePrefs()
+      const { data } = useJson(`${ROUTE_PREFIX}/today${todayQuery(prefs)}`, { pollMs })
       const reported = Number(data?.config?.statusBarRefreshMs)
       React.useEffect(() => {
         if (Number.isFinite(reported) && reported >= 1000 && reported !== pollMs) setPollMs(reported)
@@ -1880,6 +1916,18 @@ window.__ModuleLoader__.load({
       return Number(data?.allTime?.totalTokens) || 0
     }
 
+    /**
+     * `/today` 的查询串：把**持久化的统计口径**带上。
+     *
+     * 方块墙、桌宠、横幅、设置页表必须看同一份口径，否则会重演「区间合计变了、
+     * 累计没变」那种自相矛盾。口径本身存在 `prefs.json`，这里只负责传参。
+     */
+    function todayQuery(prefs) {
+      const sub = prefs?.includeSub !== false ? '1' : '0'
+      const aux = prefs?.includeAux !== false ? '1' : '0'
+      return `?includeSub=${sub}&includeAux=${aux}`
+    }
+
     // ── 专属主面板 ─────────────────────────────────────────────────────
     /**
      * 侧栏里的方块墙图标。
@@ -1976,7 +2024,9 @@ window.__ModuleLoader__.load({
       // 消耗分布的维度：工作区 / 模型 / 厂商。
       // 默认工作区（保持原有行为），另两个是「同一模型多供应商」问题的答案。
       const [distDim, setDistDim] = React.useState('workspace')
-      const { data } = useJson(`${ROUTE_PREFIX}/today`, { pollMs: 1000 })
+      // 统计口径（含子会话 / 含辅助调用）——与设置页共用同一份 prefs。
+      const prefs = usePrefs()
+      const { data } = useJson(`${ROUTE_PREFIX}/today${todayQuery(prefs)}`, { pollMs: 1000 })
       const [newFrom, setNewFrom] = React.useState(undefined)
 
       // 分布数据：按维度拉不同的分组。
@@ -2372,6 +2422,9 @@ window.__ModuleLoader__.load({
             statusBar: data.prefs.statusBar !== false,
             pet: data.prefs.pet !== false,
             wallPanel: data.prefs.wallPanel !== false,
+            // 统计口径也要同步：它决定这一拍以及后面的轮询怎么问 host。
+            includeSub: data.prefs.includeSub !== false,
+            includeAux: data.prefs.includeAux !== false,
           })
         }
 
@@ -2449,14 +2502,18 @@ window.__ModuleLoader__.load({
       // ── 轮询 ──
       // /today 给全部读数：累计、今日、昨日、本次运行平均速度、当前工作区、
       // 以及运行时开关（prefs）。一个端点就够，不需要再单独拉 workspace。
+      //
+      // 统计口径每次轮询都从 `prefsStore` 现读：用户在设置页改完，下一拍就生效
+      // （桌宠不是 React 组件，拿不到 props，只能从共享 store 取）。
+      const todayPath = () => `${ROUTE_PREFIX}/today${todayQuery(prefsStore.value)}`
       const pollTimer = setInterval(() => {
-        fetch(`${ROUTE_PREFIX}/today`, { cache: 'no-store' })
+        fetch(todayPath(), { cache: 'no-store' })
           .then((r) => (r.ok ? r.json() : undefined))
           .then(render)
           .catch(() => {})
       }, 1000)
       // 立即拉一次，避免首秒空白。
-      fetch(`${ROUTE_PREFIX}/today`, { cache: 'no-store' })
+      fetch(todayPath(), { cache: 'no-store' })
         .then((r) => (r.ok ? r.json() : undefined))
         .then(render)
         .catch(() => {})
@@ -2562,7 +2619,10 @@ window.__ModuleLoader__.load({
      * 桌宠因此能**立即**出现/消失，不用刷新页面。
      */
     const prefsStore = {
-      value: { statusBar: false, pet: true, wallPanel: true },      listeners: new Set(),
+      value: {
+        statusBar: false, pet: true, wallPanel: true, includeSub: true, includeAux: true,
+      },
+      listeners: new Set(),
       set(next) {
         this.value = { ...this.value, ...next }
         for (const fn of this.listeners) {

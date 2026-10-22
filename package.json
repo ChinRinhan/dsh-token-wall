@@ -1,6 +1,6 @@
 {
   "name": "dsh-token-usage",
-  "version": "1.0.0",
+  "version": "0.1.1",
   "private": false,
   "type": "module",
   "description": "Token usage dashboard for DeepSeek Harness: records every model call from the session log, buckets by local day, and shows a block wall (one block per 10M tokens), per-workspace / per-model / per-vendor breakdowns, and a floating pet.",
@@ -19,6 +19,7 @@
     "icon.svg",
     "cordis.patch.yml",
     "README.md",
+    "CHANGELOG.md",
     "LICENSE"
   ],
   "dsh": {
@@ -36,12 +37,12 @@
   },
   "scripts": {
     "test": "npm run check && npm run test:unit && npm run test:client && npm run test:host",
-    "test:unit": "node --test test/fold.test.mjs && node --test test/blocks.test.mjs && node --test test/prefs.test.mjs && node --test test/models.test.mjs",
+    "test:unit": "node --test test/fold.test.mjs && node --test test/blocks.test.mjs && node --test test/prefs.test.mjs && node --test test/models.test.mjs && node --test test/adapter.test.mjs && node --test test/store.retention.test.mjs",
     "test:client": "node test/client.smoke.mjs && node test/odometer.text.mjs && node test/sparkline.test.mjs && node test/blocks-cross.test.mjs && node test/distribution.test.mjs",
-    "test:host": "node test/host.routes.test.mjs",
+    "test:host": "node test/host.routes.test.mjs && node --test test/host.today.filter.test.mjs",
     "test:data": "node test/cross-validate.mjs \"$DSH_HOME/sessions\" && node test/store.e2e.mjs \"$DSH_HOME/sessions\"",
     "visual": "node tools/visual-check.mjs",
-    "check": "node --check index.js && node --check client.js && node --check lib/fold.js && node --check lib/store.js && node --check lib/collect.js && node --check lib/blocks.js && node --check lib/models.js && node --check lib/prefs.js && node --check tools/check-stray-backticks.mjs && node tools/check-stray-backticks.mjs index.js client.js tools/visual-check.mjs"
+    "check": "node --check index.js && node --check client.js && node --check lib/fold.js && node --check lib/store.js && node --check lib/collect.js && node --check lib/adapter.js && node --check lib/blocks.js && node --check lib/models.js && node --check lib/prefs.js && node --check tools/check-stray-backticks.mjs && node tools/check-stray-backticks.mjs index.js client.js tools/visual-check.mjs"
   },
   "meta": {
     "title": "Token 用量",

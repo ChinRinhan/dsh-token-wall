@@ -154,6 +154,35 @@ slot 注册是**一次性**的，而开关是运行时可变的。所以：
 
 数据流：设置页点开关 → 先本地生效（立刻响应）→ `PUT /prefs` 存盘 → host 是权威 → 下次 `/today` 轮询把权威值灌回 store。
 
+## 宿主接口适配（`lib/adapter.js`）
+
+回填原先直接写死了一代 `sessionPersistence` 接口。同机另一份 DSH（`0.1.0-rc.6`）三处都不成立，而且**三处失败全部静默**：
+
+| 期望 | 实际 |
+|---|---|
+| `list()` → `{header, revision}[]` | `SessionHeader[]`（无包裹）→ `snapshot.header.id` 是 `undefined` → 回填 `sessions: 0` |
+| `open(id,'read',{signal})` | 不存在（只有 `load` / `inspect` + `readFrom`） |
+| `handle.inheritedEventCount` | 不存在（只有 `header.seedLength` / `session.firstLiveSeq` / `session/end-seed`） |
+
+实测两种形状跑同一批事件：
+
+```
+rc.8 真实形状   → sessions=0 entries=0 failed=0   ← 一条 warn 都没有
+旧形状          → sessions=1 entries=2 failed=0
+```
+
+所以这一层做三件事：
+
+1. **先探测再分支**：`probePersistence()` 返回 `{listKind, readKind}`，按实际存在的成员名走；结果进 `/today` 与 `/summary` 的 `diagnostics.persistence`，出现在设置页诊断区——接口换代时这是第一现场。
+2. **认不出来就明说**：列表能力缺失 → 立刻返回并落 `degraded`；读取能力缺失 → 逐会话记 `failed` 并落 `degraded`。两者都会在界面上显示成红色提示，绝不把「读不到」渲染成「你本来就没有」。
+3. **继承前缀三种来源**：`header.seedLength`（durable，最权威）→ `handle.inheritedEventCount`（旧版）→ 日志里**最后一个** `session/end-seed` 的 `seq+1`（新版把边界投影成事件）。实时路径同理，退到 `session.firstLiveSeq`。
+
+### 为什么这条纪律值得单独讲
+
+`tools/session-logs.mjs` 的测试替身**自己造了** `inheritedEventCount` 字段，`test/cross-validate.mjs` 又按同一个假设复算期望值——**实现与验证器共享同一个错误前提**，所以交叉校验永远绿。这是 [NOTES.md](NOTES.md) 里「验证器骗过自己」的第五例。
+
+现在 `test/adapter.test.mjs` 用两套按真实形状写的夹具跑同一批事件，断言两边读数一致；再加反向断言：接口认不出来时 `degraded` 必须非空。
+
 ## 为什么桌宠不走 slot
 
 slot 内容渲染在宿主的 React 树里，`position: fixed` 会被任何带 `transform` / `filter` 的**祖先元素**劫持成相对定位（CSS 规范）。桌宠因此被锚死在 slot 容器那一小块区域里，只能在左边窄条里滑动，拖不出来。

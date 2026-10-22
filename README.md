@@ -168,9 +168,11 @@ deepseek-v4.1-flash-free        23.1M   ← 带 free 后缀
 | | 位置 | 生效方式 | 用途 |
 |---|---|---|---|
 | `config.statusBarEnabled` | `cordis.patch.yml` | 重启 DSH | 部署期的硬开关 |
-| 设置页三个开关 | `$DSH_HOME/token-usage/prefs.json` | **立即生效** | 日常调整 |
+| 设置页五个开关 | `$DSH_HOME/token-usage/prefs.json` | **立即生效** | 日常调整 |
 
-设置页那三个开关存在独立文件里，是因为改 Cordis config 要重启，而「我想把桌宠关掉」显然不该重启。
+设置页那五个开关存在独立文件里，是因为改 Cordis config 要重启，而「我想把桌宠关掉」显然不该重启。
+
+其中两个是**统计口径**（`includeSub` / `includeAux`，对应「含子会话」「含辅助调用」）。它们会影响**所有**读数——方块墙、桌宠、横幅、设置页表格共用同一份口径，改完下一拍轮询就生效。放在这里而不是 Cordis config 里，是为了能随时切换并立即看到差别。
 
 ---
 
@@ -180,7 +182,7 @@ deepseek-v4.1-flash-free        23.1M   ← 带 free 后缀
 
 | 路径 | 说明 |
 |---|---|
-| `GET /dsh-token-usage/today` | 今日 + 昨日 + 累计 + 本次运行平均速度 + 当前工作区/模型 + 运行时开关 + 诊断 |
+| `GET /dsh-token-usage/today` | 今日 + 昨日 + 累计 + 本次运行平均速度 + 当前工作区/模型 + 运行时开关 + 诊断。接受 `includeSub` / `includeAux`，与 `/summary` **同一口径** |
 | `GET /dsh-token-usage/summary` | 区间汇总。`groupBy` 可取 `day` `week` `month` `provider` `model` `providerModel` `kind` `workspace` `modelNorm` `vendor` |
 | `GET /dsh-token-usage/workspaces` | 工作区分布，只回 top N（`limit` / `from` / `to`） |
 | `GET / PUT /dsh-token-usage/prefs` | 运行时开关（`statusBar` / `pet` / `wallPanel`）。唯一可写的端点 |
@@ -247,6 +249,8 @@ npm run check     # 语法检查 + 落单反引号检查
 node --test test/fold.test.mjs          # 日界、周月归属、合计口径、水位线去重、fork 前缀
 node --test test/blocks.test.mjs        # 方块换算：整除、跨页、当前块、进度、异常输入
 node --test test/models.test.mjs        # 模型归并：归一化、代际不合并、别名
+node --test test/adapter.test.mjs       # 宿主接口：新旧两代形状必须同一读数；认不出来要报 degraded
+node --test test/store.retention.test.mjs # 保留期：内存与盘同时淘汰，且淘汰后不复活
 node --test test/prefs.test.mjs         # 运行时开关存储：缺省、原子写、脏输入、损坏回退
 node test/client.smoke.mjs              # 四个 slot 注册、样式真进 DOM、主题 token
 node test/odometer.text.mjs             # 桌宠可见文案逐条断言
@@ -299,11 +303,25 @@ node tools/visual-check.mjs                      # 生成视觉验证 HTML
 - **两个真实进程密集并发写**时，后写者可能基于陈旧快照覆盖。桌面场景通常单进程单 profile，影响面有限；根治需要文件锁
 - **视觉验证的边界**：`tools/visual-check.mjs` 用的是真实组件 + 真实 CSS + 真实数据，但**宿主外壳是模拟的**（侧栏、设置面板外框、composer 布局）。驱动真实页面需要 launch token，没有也不该去取
 - **≤768px 时桌宠隐藏**，窄屏只剩侧栏面板可用
+- **保留期到期的那一天**，更早的日聚合会从盘上和内存里一起消失（默认 400 天）。这是设计行为，不是 bug；不想要就设 `keepDays: 0`
+
+### 宿主接口兼容性
+
+历史回填依赖 `ctx.sessionPersistence`。这个服务在不同 DSH 版本里**换过形状**：
+
+| 能力 | 旧版 | 0.1.0-rc.6 起 |
+|---|---|---|
+| 列举会话 | `list()` → `{header, revision}[]` | `listSnapshots()`；`list()` 改为直接返回 `SessionHeader[]` |
+| 读事件 | `open(id,'read')` → 句柄 | `load(id)` / `inspect(id)` / `readFrom(id, seq)` |
+| fork 继承前缀 | `handle.inheritedEventCount` | `header.seedLength` / `session.firstLiveSeq` / `session/end-seed` 事件 |
+
+插件通过 `lib/adapter.js` 同时支持两代。**认不出来时不会假装成功**：设置页「诊断」区会显示 `宿主接口: list=… read=…`，以及红色的「回填降级」提示——看到它就说明累计数可能偏低，请把这一行连同 DSH 版本一起反馈。
 
 ---
 
 ## 文档
 
+- [CHANGELOG.md](CHANGELOG.md) — 版本变更：每一版修了什么、为什么、怎么验证的
 - [docs/DESIGN.md](docs/DESIGN.md) — 架构与关键设计：数据流、水位线去重、fork 前缀、桶键、模型归并
 - [docs/NOTES.md](docs/NOTES.md) — 开发笔记：踩过的坑、验证器失效的四种方式、视觉问题清单
 

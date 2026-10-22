@@ -12,12 +12,18 @@
  * - `open(id,'read')` 返回带 `header` / `inheritedEventCount` / `read()` / `close()`
  *   的句柄。
  *
- * 唯一的有意简化：真实后端的 `inheritedEventCount` 来自持久化状态（seeded 会话的
- * 头部字段）。这里按**同样的规则**推导：只有 `isSeeded === true` 的会话才可能有
- * 非零继承前缀，未 seeded 的头部**必须**是 0（持久化层对 `!isSeeded && cut !== 0`
- * 直接抛错，见 `toHeaderLine`）。本机实测语料里 16 个子代理 fork 全是
- * `isSeeded=false`、自带从 0 开始的独立日志，因此它们的继承前缀就是 0——把
- * `delegationDepth` 当作前缀长度是**错的**（那会把子会话自己的 seq 0 误判为继承）。
+ * 唯一的有意简化：这里模拟的是**旧一代** `sessionPersistence` 的句柄形状
+ * （`open()` 返回带 `inheritedEventCount` 的句柄）。新一代（0.1.0-rc.6 起）没有
+ * `open()`，也没有这个字段——分叉边界改为 `header.seedLength` 或日志里的
+ * `session/end-seed` 事件，见 `lib/adapter.js`。
+ *
+ * ⚠️ 这个替身**不能**单独用来证明 fork 前缀处理是对的：它自己造了一个
+ * `inheritedEventCount` 字段，而真实的新版根本没有。证明那条逻辑要靠
+ * `test/adapter.test.mjs` 里两套形状的对照。
+ *
+ * 本机实测语料里 16 个子代理 fork 全是 `isSeeded=false`、自带从 0 开始的独立日志，
+ * 因此它们的继承前缀就是 0——把 `delegationDepth` 当作前缀长度是**错的**
+ * （那会把子会话自己的 seq 0 误判为继承）。
  */
 
 import { readdirSync, readFileSync } from 'node:fs'
@@ -98,8 +104,9 @@ export async function makePersistence(root) {
       return {
         id,
         header: s.header,
-        // 真实语义：fork 继承前缀的长度，**只对 seeded 会话**非零。
-        // 未 seeded 的头部该值必须为 0（见模块头说明）。
+        // 旧一代语义：fork 继承前缀的长度，只对 seeded 会话非零。
+        // 新一代没有这个字段（adapter 会优先读 header.seedLength，退到
+        // session/end-seed 事件）。保留它只是为了让回填走**旧版分支**。
         inheritedEventCount: s.header.isSeeded === true ? Number(s.header.inheritedEventCount ?? 0) : 0,
         async read() {
           return { eventState: 'detached', events: s.events }

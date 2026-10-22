@@ -28,6 +28,7 @@ import { join } from 'node:path'
 import { openStore } from './lib/store.js'
 import { openPrefs } from './lib/prefs.js'
 import { backfill, entryFromLiveEvent } from './lib/collect.js'
+import { probePersistence } from './lib/adapter.js'
 import { aggregateRange, diffDays, localDayKey, shiftDayKey } from './lib/fold.js'
 import { groupModels, groupVendors } from './lib/models.js'
 
@@ -154,6 +155,8 @@ export function apply(ctx, rawConfig) {
     backfill: undefined,
     backfillError: undefined,
     backfilledAt: undefined,
+    /** 宿主 `sessionPersistence` 实际支持哪些调用（接口换代时这里是第一现场）。 */
+    persistence: undefined,
     liveEntries: 0,
     startedAt: Date.now(),
   }
@@ -162,6 +165,14 @@ export function apply(ctx, rawConfig) {
   ctx.inject(['sessionPersistence'], (scoped) => {
     const persistence = scoped.sessionPersistence
     if (persistence === undefined) return
+    // 接口探测：不同代 DSH 的 sessionPersistence 形状不同（见 lib/adapter.js）。
+    // 探测结果进诊断区——这是「回填为什么是 0」的第一现场，不能只留在日志里。
+    diagnostics.persistence = probePersistence(persistence)
+    logger.info?.(
+      `[token-usage] 宿主接口：list=${diagnostics.persistence.listKind}`
+      + ` read=${diagnostics.persistence.readKind}`
+      + (diagnostics.persistence.degraded === undefined ? '' : ` ⚠️ ${diagnostics.persistence.degraded}`),
+    )
     if (!config.backfillOnStart) {
       logger.info?.('[token-usage] 已按配置跳过历史回填')
       return
@@ -184,6 +195,12 @@ export function apply(ctx, rawConfig) {
         diagnostics.backfill = summary
         diagnostics.backfilledAt = Date.now()
         store.flush()
+        // 降级必须显眼：静默的 0 会被当成「你本来就没有历史」，是最坏的失败形态。
+        if (summary.degraded !== undefined) {
+          logger.warn?.(
+            `[token-usage] 历史回填降级（读数可能偏低）：${summary.degraded}`,
+          )
+        }
         logger.info?.(
           `[token-usage] 历史回填完成：会话 ${summary.sessions}（失败 ${summary.failed}），`
           + `新入账 ${summary.entries} 笔，扫描可入账事件 ${summary.assistantMessages}`
@@ -247,6 +264,20 @@ export function apply(ctx, rawConfig) {
     const today = () => localDayKey(Date.now())
 
     /**
+     * 两个过滤开关的统一取值口径。
+     *
+     * ⚠️ **所有端点必须共用这两个函数**。早先 `/today` 直接读 `config.*`，
+     * 完全不看查询参数，于是「设置页关掉含子会话」之后：区间合计变小了，
+     * 而方块墙/桌宠读的 `/today` 一点没变——同一块界面上出现两个互相矛盾的
+     * 累计值。这正是当年 `grandTotals` 那个 bug 的同款，只是换了个边界。
+     *
+     * 语义是**硬与**：`config` 关掉就再也打不开（部署期硬开关），查询参数只能
+     * 在 config 允许的范围内再收窄。
+     */
+    const wantsSub = (query) => config.includeSubagents && query?.get('includeSub') !== '0'
+    const wantsAux = (query) => config.includeAuxiliary && query?.get('includeAux') !== '0'
+
+    /**
      * 全量合计**必须走同一套过滤**。
      *
      * 这里曾经直接调 `grandTotals(store.days)`——它把**所有**桶无差别相加，完全
@@ -290,8 +321,8 @@ export function apply(ctx, rawConfig) {
         ? query.get('from')
         : shiftDayKey(todayKey, -29)
       const to = typeof query.get('to') === 'string' && query.get('to') !== '' ? query.get('to') : todayKey
-      const includeSub = config.includeSubagents && query.get('includeSub') !== '0'
-      const includeAux = config.includeAuxiliary && query.get('includeAux') !== '0'
+      const includeSub = wantsSub(query)
+      const includeAux = wantsAux(query)
 
       // 归并维度：先按原始 model 聚合，再在 host 侧合并。
       // ⚠️ 不能直接按归一化名分桶——桶键是落盘格式，改它要迁移历史数据。
@@ -321,8 +352,11 @@ export function apply(ctx, rawConfig) {
           allTime: allTimeTotals(includeSub, includeAux, workspace),
           config: {
             keepDays: config.keepDays,
-            includeSubagents: config.includeSubagents,
-            includeAuxiliary: config.includeAuxiliary,
+            // ⚠️ 回显**本次响应实际用的**口径（而不是部署期 config 原值）：
+            // 两个端点同名同义，客户端才能直接拿它显示「当前统计范围」。
+            // 部署期的硬开关另有 `configurable` 含义，不该混在这个字段里。
+            includeSubagents: includeSub,
+            includeAuxiliary: includeAux,
             statusBarEnabled: config.statusBarEnabled,
             statusBarRefreshMs: config.statusBarRefreshMs,
           },
@@ -332,6 +366,8 @@ export function apply(ctx, rawConfig) {
             backfill: diagnostics.backfill,
             backfillError: diagnostics.backfillError,
             backfilledAt: diagnostics.backfilledAt,
+            persistence: diagnostics.persistence,
+          persistence: diagnostics.persistence,
             store: store.describe(),
             sessionsTracked: store.watermarks?.size ?? 0,
           },
@@ -366,8 +402,9 @@ export function apply(ctx, rawConfig) {
         allTime: allTimeTotals(includeSub, includeAux, workspace),
         config: {
           keepDays: config.keepDays,
-          includeSubagents: config.includeSubagents,
-          includeAuxiliary: config.includeAuxiliary,
+          // 同 modelNorm 分支：回显本次响应用的实际口径，与 `/today` 保持同义。
+          includeSubagents: includeSub,
+          includeAuxiliary: includeAux,
           statusBarEnabled: config.statusBarEnabled,
           statusBarRefreshMs: config.statusBarRefreshMs,
         },
@@ -378,6 +415,7 @@ export function apply(ctx, rawConfig) {
           backfill: diagnostics.backfill,
           backfillError: diagnostics.backfillError,
           backfilledAt: diagnostics.backfilledAt,
+          persistence: diagnostics.persistence,
           store: store.describe(),
           sessionsTracked: store.watermarks?.size ?? 0,
         },
@@ -387,23 +425,28 @@ export function apply(ctx, rawConfig) {
     /**
      * 轻量端点：状态条/里程表只关心「今日 + 累计」这几个数，避免每次轮询都下发
      * 整张聚合表。轮询频率是 1 秒级，所以这里刻意只做 O(日×桶) 的加总。
+     *
+     * @param query 可选的查询参数。接受 `includeSub` / `includeAux`，与 `/summary`
+     *   **同一口径**——否则页面上的「累计」与区间合计会互相矛盾。
      */
-    const buildToday = () => {
+    const buildToday = (query) => {
+      const includeSub = wantsSub(query)
+      const includeAux = wantsAux(query)
       const day = today()
       const { totals } = aggregateRange(store.days, {
         from: day,
         to: day,
         groupBy: 'day',
-        includeSub: config.includeSubagents,
-        includeAux: config.includeAuxiliary,
+        includeSub,
+        includeAux,
       })
       const yesterdayKey = shiftDayKey(day, -1)
       const yesterday = aggregateRange(store.days, {
         from: yesterdayKey,
         to: yesterdayKey,
         groupBy: 'day',
-        includeSub: config.includeSubagents,
-        includeAux: config.includeAuxiliary,
+        includeSub,
+        includeAux,
       }).totals
       return {
         ok: true,
@@ -411,7 +454,7 @@ export function apply(ctx, rawConfig) {
         yesterday: { day: yesterdayKey, totals: yesterday },
         totals,
         // 累计是**单调递增**的，正是「越花越多」最直接的表达。
-        allTime: allTimeTotals(config.includeSubagents, config.includeAuxiliary),
+        allTime: allTimeTotals(includeSub, includeAux),
         // 本次运行的平均速度。
         //
         // ⚠️ 早先客户端用的是「累计值的相邻采样变化率」，那个指标**在空闲时恒为 0**
@@ -435,6 +478,9 @@ export function apply(ctx, rawConfig) {
           keepDays: config.keepDays,
           statusBarEnabled: config.statusBarEnabled,
           statusBarRefreshMs: config.statusBarRefreshMs,
+          // 本次响应实际用的过滤口径，客户端据此显示「当前统计范围」。
+          includeSubagents: includeSub,
+          includeAuxiliary: includeAux,
         },
         // 运行时开关的当前状态。客户端在挂载桌宠 / 注册横幅前先读它，
         // 所以「关掉某个模块」是**立即生效**的（不用重启、不用重载页面）。
@@ -448,6 +494,7 @@ export function apply(ctx, rawConfig) {
           backfill: diagnostics.backfill,
           backfillError: diagnostics.backfillError,
           backfilledAt: diagnostics.backfilledAt,
+          persistence: diagnostics.persistence,
           store: store.describe(),
           sessionsTracked: store.watermarks?.size ?? 0,
         },
@@ -523,7 +570,8 @@ export function apply(ctx, rawConfig) {
         path: `${ROUTE_PREFIX}/today`,
         handler: (req, res) => {
           try {
-            sendJson(res, buildToday())
+            const url = new URL(req.url ?? '/', 'http://localhost')
+            sendJson(res, buildToday(url.searchParams))
           } catch (error) {
             sendJson(res, { ok: false, error: String(error?.message ?? error) }, 500)
           }
