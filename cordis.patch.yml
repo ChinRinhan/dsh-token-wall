@@ -1,9 +1,15 @@
 # Bundle patch layer: the row loads this package's main entry as the Host half
 # (a plain Cordis plugin); the `dsh.client` declaration in package.json makes the
 # web app load ./client.js as the browser half.
+#
+# ⚠️ `id` 与 `name` 不同是有意的：
+#   - `id` 是**插件内部标识**，决定路由前缀（/dsh-token-usage/*）与存储目录
+#     （$DSH_HOME/token-usage/）。必须一直保持 dsh-token-usage，否则已有用户的
+#     历史数据与运行时开关会「找不到」。
+#   - `name` 是 **npm 包名**，因为 dsh-token-usage 已被另一个同类插件占用。
 - insert:
     - id: dsh-token-usage
-      name: 'dsh-token-usage'
+      name: 'dsh-token-wall'
       config:
         keepDays: 400
         includeSubagents: true

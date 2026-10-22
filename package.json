@@ -1,9 +1,29 @@
 {
-  "name": "dsh-token-usage",
+  "name": "dsh-token-wall",
   "version": "0.1.1",
   "private": false,
   "type": "module",
-  "description": "Token usage dashboard for DeepSeek Harness: records every model call from the session log, buckets by local day, and shows a block wall (one block per 10M tokens), per-workspace / per-model / per-vendor breakdowns, and a floating pet.",
+  "description": "Token usage dashboard for DeepSeek Harness: a block wall where each block is 10M tokens, spend breakdown by workspace / model / vendor, and a draggable floating pet.",
+  "keywords": [
+    "deepseek",
+    "deepseek-harness",
+    "dsh",
+    "cordis",
+    "cordis-plugin",
+    "token-usage",
+    "dashboard",
+    "llm"
+  ],
+  "author": "The dsh-token-wall Authors",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ChinRinhan/dsh-token-usage.git"
+  },
+  "bugs": {
+    "url": "https://github.com/ChinRinhan/dsh-token-usage/issues"
+  },
+  "homepage": "https://github.com/ChinRinhan/dsh-token-usage#readme",
   "icon": "./icon.svg",
   "exports": {
     ".": "./index.js",
@@ -22,6 +42,9 @@
     "CHANGELOG.md",
     "LICENSE"
   ],
+  "engines": {
+    "node": ">=20"
+  },
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
@@ -42,11 +65,11 @@
     "test:host": "node test/host.routes.test.mjs && node --test test/host.today.filter.test.mjs",
     "test:data": "node test/cross-validate.mjs \"$DSH_HOME/sessions\" && node test/store.e2e.mjs \"$DSH_HOME/sessions\"",
     "visual": "node tools/visual-check.mjs",
-    "check": "node --check index.js && node --check client.js && node --check lib/fold.js && node --check lib/store.js && node --check lib/collect.js && node --check lib/adapter.js && node --check lib/blocks.js && node --check lib/models.js && node --check lib/prefs.js && node --check tools/check-stray-backticks.mjs && node tools/check-stray-backticks.mjs index.js client.js tools/visual-check.mjs"
+    "check": "node --check index.js && node --check client.js && node --check lib/fold.js && node --check lib/store.js && node --check lib/collect.js && node --check lib/adapter.js && node --check lib/blocks.js && node --check lib/models.js && node --check lib/prefs.js && node --check tools/check-stray-backticks.mjs && node tools/check-stray-backticks.mjs index.js client.js tools/visual-check.mjs",
+    "prepublishOnly": "npm test"
   },
   "meta": {
     "title": "Token 用量",
     "description": "按本机时区统计每次模型调用的 token 消耗，支持历史回填、任意区间汇总，以及每 10M 一格的方块墙。"
-  },
-  "license": "MIT"
+  }
 }
