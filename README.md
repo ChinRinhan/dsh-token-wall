@@ -47,7 +47,7 @@ npm install dsh-token-wall
 # <profile> 通常是 ~/.dsh/profiles/<名字>
 # Windows: %USERPROFILE%\.dsh\profiles\<名字>
 cd ~/.dsh/profiles/<profile>/node_modules
-git clone https://github.com/ChinRinhan/dsh-token-usage.git dsh-token-wall
+git clone https://github.com/ChinRinhan/dsh-token-wall.git dsh-token-wall
 ```
 
 ### 方式三：用 DSH 的插件管理

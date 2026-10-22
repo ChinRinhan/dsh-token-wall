@@ -18,12 +18,12 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/ChinRinhan/dsh-token-usage.git"
+    "url": "git+https://github.com/ChinRinhan/dsh-token-wall.git"
   },
   "bugs": {
-    "url": "https://github.com/ChinRinhan/dsh-token-usage/issues"
+    "url": "https://github.com/ChinRinhan/dsh-token-wall/issues"
   },
-  "homepage": "https://github.com/ChinRinhan/dsh-token-usage#readme",
+  "homepage": "https://github.com/ChinRinhan/dsh-token-wall#readme",
   "icon": "./icon.svg",
   "exports": {
     ".": "./index.js",
