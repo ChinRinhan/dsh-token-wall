@@ -112,9 +112,10 @@ test('addTotals 返回新对象，不改入参', () => {
 
 test('bucketKey / parseBucketKey 往返一致，含分隔符的值被转义', () => {
   // workspace 现在是第 3 段（scope|kind|workspace|provider|model）。
-  const key = bucketKeyOf({ scope: 'main', kind: 'chat', workspace: 'F:\\dafeiyu', provider: 'workbuddy', model: 'deepseek-v4.1-flash' })
+  // 用中性示例路径，不要写本机真实工作区名。
+  const key = bucketKeyOf({ scope: 'main', kind: 'chat', workspace: 'D:\\projects\\alpha', provider: 'workbuddy', model: 'deepseek-v4.1-flash' })
   assert.deepEqual(parseBucketKey(key), {
-    scope: 'main', kind: 'chat', workspace: 'F:\\dafeiyu', provider: 'workbuddy', model: 'deepseek-v4.1-flash',
+    scope: 'main', kind: 'chat', workspace: 'D:\\projects\\alpha', provider: 'workbuddy', model: 'deepseek-v4.1-flash',
   })
   // 值里含 `|` 时必须仍能解析回五段（否则聚合会串桶）。
   const tricky = bucketKeyOf({ scope: 'sub', kind: 'aux', workspace: 'a|b', provider: 'c|d', model: 'e|f' })

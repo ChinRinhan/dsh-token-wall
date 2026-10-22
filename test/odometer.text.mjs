@@ -96,8 +96,8 @@ const TODAY = {
   allTime: { requests: 3492, inputTokens: 1, cacheReadTokens: 2, cacheWriteTokens: 0, outputTokens: 3, reasoningTokens: 0, totalTokens: 582972247 },
   // 本次运行的平均速度：50,000 tokens / 10 秒 = 5,000/s。
   run: { startedAt: Date.now() - 10_000, tokens: 50_000, elapsedMs: 10_000 },
-  // 当前工作区（host 告知）。
-  current: { workspace: 'F:\\dafeiyu' },
+  // 当前工作区（host 告知）。用中性示例名，不要写本机真实项目名。
+  current: { workspace: 'D:\\projects\\beta' },
   config: { statusBarEnabled: true, statusBarRefreshMs: 1000 },
   prefs: { statusBar: false, pet: true, wallPanel: true },
 }
@@ -165,7 +165,7 @@ check('速度用「本次运行平均」并正确显示 5.0K/s', /5\.0K\/s/.test
 check('速度**不**是累计变化率（那在空闲时恒为 0，会显示 —）', !/速度—/.test(joined), joined.slice(0, 140))
 
 // 当前工作区 chip。
-check('显示当前工作区 chip（dafeiyu）', joined.includes('dafeiyu'), joined.slice(0, 140))
+check('显示当前工作区 chip（beta）', joined.includes('beta'), joined.slice(0, 140))
 
 // 累计数字不缩写（要看得出低位在涨）——桌宠的大数字用 compact，
 // 但**横幅**（已废弃）用的是不缩写格式。这里只断言桌宠显示的是缩写形式，

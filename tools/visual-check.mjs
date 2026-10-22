@@ -182,7 +182,7 @@ const TODAY = {
   // 当前工作区 / 当前模型（host 告知「刚刚在哪、用什么产生了消耗」）。
   // ⚠️ 模型给**原始名**（带渠道前缀），这正是 host 的行为——客户端要自己
   // 归一化后才能匹配到归并后的行。
-  current: { workspace: 'F:\\dafeiyu', model: 'workbuddy/deepseek-v4.1-flash' },
+  current: { workspace: 'D:\\projects\\beta', model: 'workbuddy/deepseek-v4.1-flash' },
   generatedAt: Date.now(),
   config: { keepDays: 400, statusBarEnabled: true, statusBarRefreshMs: 1000 },
   // 运行时开关：横幅默认关（内容已并入桌宠），桌宠与主面板默认开。
@@ -210,41 +210,50 @@ const mkRow = (key, label, kind, requests, total) => ({
   },
 })
 
-// 工作区分组的假数据——**用本机真实分布**（来自 tools/migrate-workspace.mjs 的
-// 实测结果）。这样截图里的横条长度比例是真的，不是随手编的。
+// 工作区分组的假数据。
+//
+// ⚠️ **不要用真实工作区名**。早先这里直接抄了本机实测的工作区（含项目名与
+// 用户名），截图发出去就等于公布了「我在做哪些项目」。现在改用中性示例名，
+// 但**保留真实的分布形状**（相对大小、行数、一条无名的、一条家目录级的），
+// 所以横条长度比例仍有意义，不是随手编的。
 const WORKSPACE_ROWS = [
-  { workspace: 'F:\\HD222game', totals: { requests: 3700, inputTokens: 12000000, cacheReadTokens: 800000000, cacheWriteTokens: 0, outputTokens: 12000000, reasoningTokens: 300000, totalTokens: 842373593 } },
-  { workspace: 'F:\\dsh-work', totals: { requests: 3100, inputTokens: 10000000, cacheReadTokens: 670000000, cacheWriteTokens: 0, outputTokens: 10000000, reasoningTokens: 250000, totalTokens: 702839440 } },
-  { workspace: 'F:\\dafeiyu', totals: { requests: 2900, inputTokens: 9000000, cacheReadTokens: 630000000, cacheWriteTokens: 0, outputTokens: 9000000, reasoningTokens: 200000, totalTokens: 656068057 } },
-  { workspace: 'F:\\HD2game', totals: { requests: 2400, inputTokens: 8000000, cacheReadTokens: 490000000, cacheWriteTokens: 0, outputTokens: 8000000, reasoningTokens: 150000, totalTokens: 527475379 } },
-  { workspace: 'F:\\HD2tafang', totals: { requests: 900, inputTokens: 3000000, cacheReadTokens: 220000000, cacheWriteTokens: 0, outputTokens: 3000000, reasoningTokens: 50000, totalTokens: 231580537 } },
-  { workspace: 'F:\\文案', totals: { requests: 300, inputTokens: 1200000, cacheReadTokens: 84000000, cacheWriteTokens: 0, outputTokens: 1200000, reasoningTokens: 30000, totalTokens: 8858720 } },
+  { workspace: 'D:\\projects\\alpha', totals: { requests: 3700, inputTokens: 12000000, cacheReadTokens: 800000000, cacheWriteTokens: 0, outputTokens: 12000000, reasoningTokens: 300000, totalTokens: 842373593 } },
+  { workspace: 'D:\\projects\\beta', totals: { requests: 3100, inputTokens: 10000000, cacheReadTokens: 670000000, cacheWriteTokens: 0, outputTokens: 10000000, reasoningTokens: 250000, totalTokens: 702839440 } },
+  { workspace: 'D:\\projects\\gamma', totals: { requests: 2900, inputTokens: 9000000, cacheReadTokens: 630000000, cacheWriteTokens: 0, outputTokens: 9000000, reasoningTokens: 200000, totalTokens: 656068057 } },
+  { workspace: 'D:\\projects\\delta', totals: { requests: 2400, inputTokens: 8000000, cacheReadTokens: 490000000, cacheWriteTokens: 0, outputTokens: 8000000, reasoningTokens: 150000, totalTokens: 527475379 } },
+  { workspace: 'D:\\projects\\epsilon', totals: { requests: 900, inputTokens: 3000000, cacheReadTokens: 220000000, cacheWriteTokens: 0, outputTokens: 3000000, reasoningTokens: 50000, totalTokens: 231580537 } },
+  { workspace: 'D:\\projects\\zeta', totals: { requests: 300, inputTokens: 1200000, cacheReadTokens: 84000000, cacheWriteTokens: 0, outputTokens: 1200000, reasoningTokens: 30000, totalTokens: 8858720 } },
+  // 一条「无工作区」的行：验证空串走 `wsUnnamed` 分支。
   { workspace: '', totals: { requests: 40, inputTokens: 500000, cacheReadTokens: 24000000, cacheWriteTokens: 0, outputTokens: 500000, reasoningTokens: 10000, totalTokens: 3049804 } },
-  // 一条「家目录级」的工作区：验证 basename 回落（Windows 用户目录名不该出现在公开仓库里）。
+  // 一条「家目录级」的工作区：验证 basename 回落（用户目录名不该出现在公开仓库里）。
   { workspace: 'C:\\Users\\<user>', totals: { requests: 12, inputTokens: 20000, cacheReadTokens: 20000, cacheWriteTokens: 0, outputTokens: 20000, reasoningTokens: 500, totalTokens: 26338 } },
 ]
 
 // 当前工作区：取分布里第二大的那个，让「高亮非首位」的情况也被覆盖到
 // （只高亮最大的一条会漏掉「当前不是最重的」这个真实场景）。
-const CURRENT_CWD = 'F:\\dsh-work'
+const CURRENT_CWD = 'D:\\projects\\beta'
 
 // 工作区标题映射：模拟宿主 Workspace 服务给的 title。
 //
-// ⚠️ 用**真实**的值：宿主把 workspace 存成 path: "F:\dsh-work", title: "dsh-work"
-// （见 $DSH_HOME/storages/workspace.json）——**title 就是 basename**。
-// 早先这里编了「HD222 游戏」「大发鱼」这种不存在的名字，于是截图看起来
-// 比真实效果「好看」，掩盖了「标题与路径无区别」这个事实。
+// ⚠️ 用**真实形态**的值：宿主把 workspace 存成 path: "D:\projects\alpha",
+// title: "alpha"（见 $DSH_HOME/storages/workspace.json）——**title 就是 basename**。
+// 不要编「更好看」的名字：那样截图会比真实效果漂亮，从而掩盖
+// 「标题与路径无区别」这个事实。
+//
+// ⚠️ 也**不要用真实项目名**：这些数据会出现在公开截图里。
+// 用 alpha/beta/... 这类中性名，既保持了「title == basename」的真实形态，
+// 又不泄露本机在做什么项目。
 //
 // 定义在 Node 端并用 JSON.stringify 内联进浏览器脚本：写在浏览器脚本里的话，
-// 反斜杠会被外层模板字符串先吃掉一层，浏览器再解析时 \H 退化成 H →
-// 变成 F:HD222game，与数据里的 F:\HD222game 对不上，标题映射永远失配。
+// 反斜杠会被外层模板字符串先吃掉一层，浏览器再解析时 \p 退化成 p →
+// 变成 D:projectsalpha，与数据里的 D:\projects\alpha 对不上，标题映射永远失配。
 const WS_TITLE_LIST = [
-  { path: 'F:\\HD222game', title: 'HD222game' },
-  { path: 'F:\\dsh-work', title: 'dsh-work' },
-  { path: 'F:\\dafeiyu', title: 'dafeiyu' },
-  { path: 'F:\\HD2game', title: 'HD2game' },
-  { path: 'F:\\HD2tafang', title: 'HD2tafang' },
-  { path: 'F:\\文案', title: '文案' },
+  { path: 'D:\\projects\\alpha', title: 'alpha' },
+  { path: 'D:\\projects\\beta', title: 'beta' },
+  { path: 'D:\\projects\\gamma', title: 'gamma' },
+  { path: 'D:\\projects\\delta', title: 'delta' },
+  { path: 'D:\\projects\\epsilon', title: 'epsilon' },
+  { path: 'D:\\projects\\zeta', title: 'zeta' },
 ]
 
 // 按天分组的行数据：用来验证设置页表格的**排版**（列宽固定 → 日期不折行；

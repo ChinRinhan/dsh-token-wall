@@ -61,9 +61,9 @@ if (styles !== undefined && styles.insert) ctx.effect(() => styles.insert(CSS), 
 
 ### ③ 假数据比现实好看
 
-**症状**：截图里工作区显示「HD222 游戏」「大发鱼」，真实页面显示 `HD222game`、`dafeiyu`。
+**症状**：截图里工作区显示「我的游戏项目」「文档」这种编出来的中文标题，真实页面显示的是 `alpha`、`beta` 这类目录名。
 
-**根因**：宿主把 workspace 存成 `path: "F:\dsh-work", title: "dsh-work"` —— **title 就是 basename**。我却在 visual-check 里编了「更好看」的中文标题，掩盖了「标题与路径无区别」这个事实。
+**根因**：宿主把 workspace 存成 `path: "D:\projects\alpha", title: "alpha"` —— **title 就是 basename**。我却在 visual-check 里编了「更好看」的中文标题，掩盖了「标题与路径无区别」这个事实。
 
 **修复**：假数据一律用**真实值**。编造更漂亮的数据不只是不诚实——它会**掩盖产品问题**。
 
@@ -175,7 +175,7 @@ if (styles !== undefined && styles.insert) ctx.effect(() => styles.insert(CSS), 
 
 ### 模板字符串里反斜杠被二次转义
 
-`F:\\HD222game` 在模板字符串里被转成 `F:HD222game`，与数据里的 `F:\HD222game` 对不上，标题映射永远失配。修法：在 Node 端定义好字符串，再用 `JSON.stringify` 内联。
+`D:\\projects\\alpha` 在模板字符串里被转成 `D:projectsalpha`，与数据里的 `D:\projects\alpha` 对不上，标题映射永远失配。修法：在 Node 端定义好字符串，再用 `JSON.stringify` 内联。
 
 ### 里程碑标签全部叠在左边缘
 

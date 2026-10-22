@@ -279,7 +279,7 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * 路径的末级目录名：`F:\dsh-work` → `dsh-work`。反斜杠与正斜杠都处理
+     * 路径的末级目录名：`D:\projects\alpha` → `alpha`。反斜杠与正斜杠都处理
      * （Windows 路径在日志里两种形态都出现过）。取不到末级时原样返回。
      */
     function basenameOf(cwd) {
