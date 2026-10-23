@@ -163,3 +163,55 @@ test('config 关掉 includeSubagents 时，查询参数无法把它打开（硬�
     dispose()
   }
 })
+
+// ── /workspaces 也必须走同一套口径 ─────────────────────────────────────
+//
+// 这里曾经只覆盖 `/today` 与 `/summary`，而 `/workspaces` 读的是部署期
+// `config.*`。于是设置页关掉「含子会话」后：方块墙/桌宠（读 `/today`）的累计
+// 变小了，旁边的**工作区分布**（读本端点）却纹丝不动——同一块界面两个矛盾数。
+// 三条路径里漏了第三条，正是「统一口径」这类纪律最容易失效的方式。
+
+test('/workspaces 与 /today 对同一份数据给出同一口径的合计', () => {
+  const { call, dispose } = boot()
+  try {
+    for (const flag of ['1', '0']) {
+      const today = call('/dsh-token-usage/today', `?includeSub=${flag}`)
+      const workspaces = call('/dsh-token-usage/workspaces', `?includeSub=${flag}&limit=50`)
+      assert.equal(today.ok, true)
+      assert.equal(workspaces.ok, true)
+      // 预置数据只有一个工作区（F:/ws），两个桶都在它下面。
+      const sum = workspaces.rows.reduce((acc, row) => acc + row.totalTokens, 0)
+      assert.equal(
+        sum,
+        today.allTime.totalTokens,
+        `includeSub=${flag} 时 /workspaces 的合计必须等于 /today 的累计`,
+      )
+    }
+  } finally {
+    dispose()
+  }
+})
+
+test('关掉「含子会话」也会让 /workspaces 的读数变小', () => {
+  const { call, dispose } = boot()
+  try {
+    const sum = (body) => body.rows.reduce((acc, row) => acc + row.totalTokens, 0)
+    const withSub = call('/dsh-token-usage/workspaces')
+    const withoutSub = call('/dsh-token-usage/workspaces', '?includeSub=0')
+    assert.equal(sum(withSub), 1000, '默认计入子会话（100 主 + 900 子）')
+    assert.equal(sum(withoutSub), 100, '关掉后只算主会话')
+  } finally {
+    dispose()
+  }
+})
+
+test('config 关掉 includeSubagents 时，/workspaces 的查询参数也无法打开它', () => {
+  const { call, dispose } = boot({ includeSubagents: false })
+  try {
+    const body = call('/dsh-token-usage/workspaces', '?includeSub=1')
+    const sum = body.rows.reduce((acc, row) => acc + row.totalTokens, 0)
+    assert.equal(sum, 100, '部署期关闭后，查询参数不能把它打开')
+  } finally {
+    dispose()
+  }
+})

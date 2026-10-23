@@ -691,8 +691,19 @@ export function apply(ctx, rawConfig) {
       const limit = Number.isFinite(limitRaw) && limitRaw > 0
         ? Math.min(50, Math.trunc(limitRaw))
         : 5
-      const includeSub = config.includeSubagents
-      const includeAux = config.includeAuxiliary
+      // ⚠️ 必须走 `wantsSub` / `wantsAux`，**不能**直接读 `config.*`。
+      //
+      // 这里曾经读的是部署期 `config.includeSubagents` / `config.includeAuxiliary`，
+      // 而 `/today` 与 `/summary` 走的是运行时 prefs。后果是：用户在设置页关掉
+      // 「含子会话」后，方块墙/桌宠的累计（读 `/today`）立刻变小，而旁边的
+      // 工作区分布（读本端点）纹丝不动——同一块界面上两个矛盾的数字。
+      // 这正是 `/today` 当年那个 bug 的同款，只是漏在了第三条路径上。
+      //
+      // 本端点也接受 `includeSub` / `includeAux` 查询参数（与另两个端点同义），
+      // 因为桌宠/主面板轮询时会带上它们；忽略参数会让「当前口径」的显示与实际
+      // 统计不一致。
+      const includeSub = wantsSub(query)
+      const includeAux = wantsAux(query)
       const from = typeof query.get('from') === 'string' && query.get('from') !== ''
         ? query.get('from')
         : undefined
