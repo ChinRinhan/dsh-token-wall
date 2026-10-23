@@ -280,8 +280,18 @@ totalTokens = inputTokens + cacheReadTokens + cacheWriteTokens + outputTokens
 npm test          # 全部不依赖本机数据的测试
 npm run test:data # 需要本机会话日志：交叉校验 + 存储端到端
 npm run visual    # 生成视觉验证 HTML，再用浏览器截图
-npm run check     # 语法检查 + 落单反引号检查
+npm run check     # 语法检查 + 落单反引号 + 启动标识 + 打包链接
 ```
+
+> ⚠️ **改包名时**（`package.json` 的 `name`）：`client.js` 里
+> `window.__ModuleLoader__.load({ id: ... })` 的 `id` **必须一起改**。宿主按包名
+> 索引客户端模块，写错的后果不是「这个插件不显示」，而是**整个 Web 界面起不来**
+> （`web boot: 1 entry did not activate`）。`npm run check` 会拦住这种不一致 ——
+> 它跑的是 `tools/check-boot-identity.mjs`。
+>
+> 反过来，`index.js` 里 `export const name = 'dsh-token-usage'` 与路由前缀
+> **不要**跟着包名改：它们决定 `$DSH_HOME/token-usage/` 这个存储位置，改了已有
+> 用户的历史数据就找不到了。
 
 ### 测试文件
 
@@ -316,6 +326,9 @@ node tools/preview-blocks.mjs                    # 字符画方块墙
 node tools/analyze-blocks.mjs                    # 分析「10M 一格」的填充速度
 node tools/migrate-workspace.mjs --home "$DSH_HOME"   # 桶键 4 段 → 5 段（dry-run）
 node tools/visual-check.mjs                      # 生成视觉验证 HTML
+node tools/check-boot-identity.mjs               # 注册 id / 包名 / 发布文件一致性
+node tools/check-boot-identity.mjs --profile "~/.dsh/profiles/desktop"
+                                                 # 顺带扫描该 profile 里所有客户端插件
 ```
 
 `tools/visual-check.mjs` 把**真实组件**装进**真实 React 18**，在浏览器里渲染（effect / fetch 全真），主题 token 从宿主的真实 CSS 里读。截图用 Windows 自带的 Edge 就行：

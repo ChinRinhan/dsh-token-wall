@@ -19,6 +19,9 @@ import { readFileSync } from 'node:fs'
 
 const clientPath = new URL('../client.js', import.meta.url)
 const source = readFileSync(clientPath, 'utf-8')
+// 注册 id 的唯一真源是包名：改名时这里跟着 package.json 走，避免像 2026-10-24
+// 那样包名改成 dsh-token-wall 而 client.js 仍注册旧 id、整次 Web boot 失败。
+const pkgName = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf-8')).name
 
 const failures = []
 const check = (label, cond, detail = '') => {
@@ -261,7 +264,7 @@ new Function('window', 'module', 'exports', 'require', source)(
   },
 )
 check('factory 已注册', registered !== null)
-check('注册 id == 包名', registered?.id === 'dsh-token-usage', `id=${registered?.id}`)
+check('注册 id == 包名', registered?.id === pkgName, `id=${registered?.id} pkg=${pkgName}`)
 
 console.log('\n=== 实例化 factory ===')
 const instance = registered.factory((name) => {

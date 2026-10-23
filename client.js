@@ -23,7 +23,14 @@
  */
 
 window.__ModuleLoader__.load({
-  id: 'dsh-token-usage',
+  // 必须等于 package.json 的 name：模块表按包名索引，浏览器按包名来取 bundle，
+  // 注册成别的名字 → 这一行永远解析不到 → 宿主再重试一次同一脚本 → 触发
+  // duplicate factory registration → 整次 Web boot 判失败（一开 App 就弹错）。
+  //
+  // 浏览器 bundle 读不到 package.json，所以这里只能是字面量；防漂移靠
+  // `npm run check` 里的 tools/check-boot-identity.mjs，它会在提交/发布前
+  // 比对这一行与包名，不一致直接失败。
+  id: 'dsh-token-wall',
   factory(require) {
     const React = require('react')
     const h = React.createElement

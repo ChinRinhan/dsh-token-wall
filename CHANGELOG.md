@@ -1,5 +1,87 @@
 # CHANGELOG
 
+## 0.1.3 — 2026-10-24
+
+这一版修的是一个**只在重启时才炸**的发布阻塞缺陷，并加上防止它复发的检查。
+
+一句话概括：**包名改了，bundle 里注册的 id 没改，用户一开 App 整个界面就起不来。**
+
+---
+
+### 1. 修复：注册 id 与包名不一致导致 Web boot 整体失败
+
+`package.json` 的 `name` 从 `dsh-token-usage` 改成 `dsh-token-wall` 时
+（commit `b29fcac`，因 npm 上重名），`client.js` 里的
+
+```js
+window.__ModuleLoader__.load({ id: 'dsh-token-usage', ... })
+```
+
+没跟着改。宿主的 client-modules 模块表**按包名索引**，浏览器按包名
+`dsh-token-wall` 去取 bundle，脚本执行后却注册成 `dsh-token-usage`：
+
+1. 这一行永远解析不到 → 宿主按「缺失行单独重试」再请求一次同一脚本
+2. 第二次执行触发 `duplicate factory registration for "dsh-token-usage"`
+3. Web boot 自检把它算作「1 entry did not activate」，**整个启动判失败**
+
+真实日志（`%APPDATA%\@deepseek-ai\dsh-desktop\logs\crash-*-web-boot.log`）：
+
+```
+Error: web boot: 1 entry did not activate
+dsh-token-wall: import failed (see console for the import error)
+Uncaught Error: client-modules: duplicate factory registration for "dsh-token-usage"
+```
+
+这个缺陷**延迟了约 25 小时才暴露**：改名当时宿主进程没重启，模块图早建好了，
+所以统计照常记录；10/24 02:00 重启才是第一次重新扫描包名。
+
+修法：`client.js` 的注册 id 改为 `dsh-token-wall`。
+路由前缀 `/dsh-token-usage`、存储目录、localStorage key、`PKG_NAME` 全部不变，
+**已有数据不受影响**。
+
+### 2. 新增 `tools/check-boot-identity.mjs`：让这类缺陷进不了发布
+
+把「宿主启动时用来索引这个插件的名字」三处对齐检查，并挂进 `npm run check`
+（因此也挂在 `prepublishOnly` 上）：
+
+- `client.js` 注册 id === `package.json` 的 `name`
+- `exports["./client"]` 指向的文件存在，且**在 `files` 白名单内**
+  （不在白名单 = 用户装下来没有 browser 半，症状和本故障一模一样）
+- `files` 白名单每个条目都存在
+- `exports["."]` 与 `dsh.bundle.patch` 指向的文件存在
+
+带 `--profile <dir>` 时还会扫描 profile 里**所有已安装**的 web 客户端插件，
+第三方插件写错也能拦住。
+
+已在真实 profile 上验证，并做过反向验证（把 id 改回旧值 → 工具报错、退出码 1）。
+
+### 3. 测试：注册 id 断言改为读包名
+
+`test/client.smoke.mjs` 原先硬编码 `'dsh-token-usage'` 去断言，改包名时**会和
+源码一起漂移**，等于没测。现在从 `package.json` 读 `name` 作为唯一真源。
+
+---
+
+### 变更清单
+
+```
+新增  tools/check-boot-identity.mjs   启动标识一致性检查（含 profile 扫描）
+修   client.js                        注册 id → dsh-token-wall；注释指向检查工具
+修   test/client.smoke.mjs            注册 id 断言改为读 package.json 的 name
+改   package.json                     check 脚本接入 check-boot-identity
+```
+
+### 验证
+
+`npm test` 全绿（退出码 0）。另外：
+
+- 反向验证：临时把注册 id 改回 `dsh-token-usage` → `check-boot-identity` 报
+  `注册=dsh-token-usage 包名=dsh-token-wall`，退出码 1
+- 真实 profile 扫描：`desktop` 下 4 个 web 客户端插件全部一致
+- **需要重启 DSH** 才能看到修复（模块图在启动时组合并缓存）
+
+---
+
 ## 0.1.1 — 2026-10-23
 
 这一版没有新功能。它修的是**「数字错了但看不出来」**这一类问题——为公开发布做的加固。
