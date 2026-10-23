@@ -153,19 +153,30 @@ for (const s of petText) if (String(s).trim() !== '') console.log(`  ${JSON.stri
 console.log('')
 check('显示「累计」标签', joined.includes('累计') || joined.includes('3.22'))
 check('显示累计数字（缩写，带单位）', /\d/.test(joined), joined.slice(0, 120))
-check('显示「今日」标签', joined.includes('今日'))
-check('显示今日数字（缩写）', joined.includes('142.59M'), joined.slice(0, 120))
-check('显示今日占比（百分比）', /\d+\.\d+%/.test(joined), joined.slice(0, 120))
-check('显示「速度」标签', joined.includes('速度'))
-check('显示昨日参照（全天，不做误导性百分比）', joined.includes('昨日'))
-check('**不**显示「今日 vs 昨日」百分比（部分天不可与整天比）', !/对昨日|vs yesterday/i.test(joined))
 
-// 速度：本次运行 50,000 tokens / 10 秒 = 5,000/s → compact 后 "5.0K"。
-check('速度用「本次运行平均」并正确显示 5.0K/s', /5\.0K\/s/.test(joined), joined.slice(0, 140))
-check('速度**不**是累计变化率（那在空闲时恒为 0，会显示 —）', !/速度—/.test(joined), joined.slice(0, 140))
+// ⚠️ 今日 / 速度 / 昨日 三个读数已**从桌宠移除**（见 client.js 的说明）。
+// 它们都回答「过去怎么样」，而桌宠该回答「现在有没有事」；腾出的位置在
+// PR2 交给「本会话用量」与「上下文占用」两个有后果的读数。
+//
+// 所以这里的断言从「必须显示」翻转为「必须不显示」——否则移除会被无声回滚。
+check('不再显示「今日」标签', !joined.includes('今日'), joined.slice(0, 140))
+check('不再显示今日数字 142.59M', !joined.includes('142.59M'), joined.slice(0, 140))
+check('不再显示「速度」标签', !joined.includes('速度'), joined.slice(0, 140))
+check('不再显示速度读数 5.0K/s', !/5\.0K\/s/.test(joined), joined.slice(0, 140))
+check('不再显示「昨日」参照', !joined.includes('昨日'), joined.slice(0, 140))
+check('**不**显示「今日 vs 昨日」百分比（部分天不可与整天比）', !/对昨日|vs yesterday/i.test(joined))
 
 // 当前工作区 chip。
 check('显示当前工作区 chip（beta）', joined.includes('beta'), joined.slice(0, 140))
+
+// ── 保留项：进度条 + 池 ────────────────────────────────────────────────
+//
+// 移除三个统计读数**不等于**把视觉主体也删了。池是这插件的身份读数
+// （全时累计块数，只增不减），进度条是「当前这块填到哪」——两者都必须还在。
+//
+// TODAY 的 allTime = 582.97M → floor(582.97M / 10M) = 58 块，进度 2.97%。
+check('保留池：显示全时累计块数（58 块）', joined.includes('58 块'), joined.slice(0, 140))
+check('保留进度条百分比', /\d+%/.test(joined), joined.slice(0, 140))
 
 // 累计数字不缩写（要看得出低位在涨）——桌宠的大数字用 compact，
 // 但**横幅**（已废弃）用的是不缩写格式。这里只断言桌宠显示的是缩写形式，

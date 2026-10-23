@@ -751,68 +751,39 @@ window.__ModuleLoader__.load({
   font-size: 17px; font-weight: 600; color: var(--dsw-alias-label-primary);
   overflow: hidden; text-overflow: ellipsis;
 }
-/* 仪表行：今日量 + 速度。桌宠升级成「迷你仪表盘」后新增的一行。
-   刻意做得比主数字轻——它是补充读数，主数字仍然是主角。 */
-/* 仪表行：今日量 + 占累计的比例 + 细填充条 + 平均速度 + 昨日参照。
-   ⚠️ flex-wrap: wrap + 每个单元 white-space: nowrap：仪表在窄窗口下换行时，
-   换行只发生在**单元之间**，不会把「昨日」拆成「昨」「日」竖着排。 */
-#dsh-tu-pet .dsh-tu-pet-stats {
-  display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 12px;
-  padding: 0 10px 4px; font-size: 10px; color: var(--dsw-alias-label-tertiary);
-}
-#dsh-tu-pet .dsh-tu-pet-stat {
-  display: inline-flex; align-items: baseline; gap: 3px; white-space: nowrap;
-}
-#dsh-tu-pet .dsh-tu-pet-stat-label { color: var(--dsw-alias-label-tertiary); }
-#dsh-tu-pet .dsh-tu-pet-stat-value {
-  color: var(--dsw-alias-label-secondary); font-weight: 600; font-size: 11px;
-}
-#dsh-tu-pet .dsh-tu-pet-stat-dim {
-  color: var(--dsw-alias-label-tertiary); font-size: 9px; opacity: 0.85;
-}
-/* 今日占比细条：与里程表同款，但更短。 */
-#dsh-tu-pet .dsh-tu-pet-bar {
-  display: inline-block; width: 26px; height: 3px; border-radius: 2px;
-  background: var(--dsw-alias-bg-layer-2); overflow: hidden; vertical-align: middle;
-}
-#dsh-tu-pet .dsh-tu-pet-bar-fill {
-  display: block; height: 100%; border-radius: 2px;
-  background: var(--dsw-alias-brand-primary);
-  min-width: 2px;
-  transition: width 400ms ease-out;
-}
 /* ── 桌宠动效 ────────────────────────────────────────────────────────
    桌宠之前是「半成品」：只有一个方块阵列，没有任何动效。
    现在给它三样**克制**的动效——动效的作用是「让它活着」，不是「让它抢戏」：
 
    1. **呼吸**（is-live）：「正在填」的那块轻微脉动。它是进度指示器，常驻脉动
       让面板有生气；只有一块在动，不会喧宾夺主。
-/* ── 单充能块 + 池 ───────────────────────────────────────────────────
-   取代原来的 10×3 = 30 格网格。理由：桌宠只有 ~200px 宽，30 格每格不到 16px，
-   既看不清又占高度；而方块墙主面板已有 100 格大图，桌宠再铺一遍是重复。
-
-   现在表达「越攒越多」只用一块的面积：
-   - **充能块**：当前这块填了多少（0~100%），快满时高亮；
-   - **池**：已经攒下的整块数。
+/* ── 进度条 + 池 ─────────────────────────────────────────────────────
+   「越攒越多」只用一块的面积来表达：
+   - **进度条**：它在 PR2 会换成「上下文占用」（有真实分母，快满会被压缩）；
+     PR1 仍是 10M 充能比例。为了能替换，它被写成**通用 meter**：
+     .dsh-tu-pet-meter 只负责尺寸与摆放，语义由 data-kind 决定。
+   - **池**：已经攒下的整块数（**全时累计**，不随 scope 变）。
    「充能 → 满 → 推进池里」这个动作本身就是最直观的积累。 */
 #dsh-tu-pet .dsh-tu-pet-charge {
   display: flex; align-items: center; gap: 8px;
   padding: 4px 10px 6px;
 }
 #dsh-tu-pet .dsh-tu-pet-charge-block {
-  /* 充能块是视觉主体，做得比仪表行显眼：高度 26px + 圆角，看得出「在充」。 */
+  /* 进度条是视觉主体，做得比附带读数显眼：高度 26px + 圆角，看得出「在填」。 */
   position: relative; flex: 1 1 auto; height: 26px; border-radius: 5px;
   box-sizing: border-box; overflow: hidden;
   border: 1px solid var(--dsw-alias-border-l2);
   background: var(--dsw-alias-bg-layer-2);
 }
-/* 充能填充：一条从左到右的生长条。 */
+/* 填充：一条从左到右的生长条。 */
 #dsh-tu-pet .dsh-tu-pet-charge-fill {
   position: absolute; left: 0; top: 0; bottom: 0;
   background: var(--dsw-alias-brand-primary);
   transition: width 400ms ease-out;
 }
-/* 快满了（>= 90%）：轻微呼吸，提示「马上要攒到一块了」。 */
+/* 快满了（>= 90%）：轻微呼吸，提示「马上要满」。
+   PR1 它是「快攒到一块」；PR2 换成上下文占用后，它变成「快被压缩」——
+   同一个机制，后者才是真有后果的告警。 */
 #dsh-tu-pet .dsh-tu-pet-charge-block.is-almost {
   border-color: var(--dsw-alias-brand-primary);
   animation: dsh-tu-breathe 1.4s ease-in-out infinite;
@@ -850,11 +821,11 @@ window.__ModuleLoader__.load({
   #dsh-tu-pet .dsh-tu-pet-charge-block.is-almost,
   #dsh-tu-pet .dsh-tu-pet-pool.is-new { animation: none; }
 }
-/* 折叠态：只留标题栏 + 大数字。 */
-#dsh-tu-pet.is-collapsed .dsh-tu-pet-charge,
-#dsh-tu-pet.is-collapsed .dsh-tu-pet-pool,
-#dsh-tu-pet.is-collapsed .dsh-tu-pet-stats { display: none; }
-#dsh-tu-pet.is-collapsed .dsh-tu-pet-total { padding: 7px 10px 9px; }
+/* 折叠态：只留标题栏 + 大数字 + 池。
+   ⚠️ 池在折叠态**保留**：它是桌面常驻形态里唯一「只增不减」的成就读数。 */
+#dsh-tu-pet.is-collapsed .dsh-tu-pet-charge { display: none; }
+#dsh-tu-pet.is-collapsed .dsh-tu-pet-total { padding: 7px 10px 0; }
+#dsh-tu-pet.is-collapsed .dsh-tu-pet-pool { padding: 2px 10px 8px; }
 /* 窄屏隐藏桌宠：拖拽手势会与页面滚动打架（与 tarkov 桌宠同一取舍）。 */
 @media (max-width: 768px) {
   #dsh-tu-pet { display: none !important; }
@@ -2340,70 +2311,29 @@ window.__ModuleLoader__.load({
       pool.append(poolIcon, poolLabel)
 
       // ⚠️ 不再有「底行块数 + 下一块进度条」：那块信息已经被
-      // 「充能块（当前填到多少）」+「池（攒了多少）」完整覆盖，
+      // 「进度条（当前填到多少）」+「池（攒了多少）」完整覆盖，
       // 留着就是同一件事说两遍。
       const foot = pool
 
-      // ── 仪表行（横幅合并进来的内容都住这里）──────────────────────────
+      // ⚠️ **仪表行已移除**（今日 / 速度 / 昨日 三个读数）。
       //
-      // 横幅（conversation.input.dock）被整体并入桌宠，所以这里承载原先横幅的
-      // 全部读数：今日量 + 占比条 + 速度 + 昨日参照。
+      // 移除理由：这三个数字都回答「过去怎么样」，而桌宠真正该回答的是
+      // 「现在有没有事」。它们被移除后腾出的位置，在 PR2 交给两个有后果的读数：
+      // **本会话用量**与**上下文占用**（后者快满会被压缩，用户会据此行动）。
       //
-      // 为什么桌宠该承载这些：横幅在输入框上方，会**把对话区往上挤**，而且
-      // 和桌宠显示的是同一批数字（累计/今日/速度）——两处同时显示同一件事，
-      // 是冗余。桌宠常驻在角落、不占布局、且一直在视线里。
-      const stats = doc.createElement('div')
-      stats.className = 'dsh-tu-pet-stats'
+      // 这也纠正了一处口径混淆：早先「今日」既当仪表行的主读数、又当大数字的
+      // 备选 scope，两个位置显示同一件事。
 
-      // 今日量 + 占累计的比例 + 一条细填充条。
-      const todayStat = doc.createElement('span')
-      todayStat.className = 'dsh-tu-pet-stat'
-      const todayLabel = doc.createElement('span')
-      todayLabel.className = 'dsh-tu-pet-stat-label'
-      todayLabel.textContent = t('statusBarLabel')
-      const todayValue = doc.createElement('b')
-      todayValue.className = 'dsh-tu-pet-stat-value'
-      const todayShare = doc.createElement('span')
-      todayShare.className = 'dsh-tu-pet-stat-dim'
-      const todayBar = doc.createElement('span')
-      todayBar.className = 'dsh-tu-pet-bar'
-      const todayBarFill = doc.createElement('span')
-      todayBarFill.className = 'dsh-tu-pet-bar-fill'
-      todayBar.appendChild(todayBarFill)
-      todayStat.append(todayLabel, todayValue, todayShare, todayBar)
-
-      // 本次运行的平均速度。
-      const rateStat = doc.createElement('span')
-      rateStat.className = 'dsh-tu-pet-stat'
-      const rateLabel = doc.createElement('span')
-      rateLabel.className = 'dsh-tu-pet-stat-label'
-      rateLabel.textContent = t('rate')
-      const rateValue = doc.createElement('b')
-      rateValue.className = 'dsh-tu-pet-stat-value'
-      rateStat.append(rateLabel, rateValue)
-
-      // 昨日全天作为参照（不做「今日 vs 昨日」百分比——今天进行中，比值误导）。
-      const yesterdayStat = doc.createElement('span')
-      yesterdayStat.className = 'dsh-tu-pet-stat'
-      const yesterdayLabel = doc.createElement('span')
-      yesterdayLabel.className = 'dsh-tu-pet-stat-label'
-      yesterdayLabel.textContent = t('yesterday')
-      const yesterdayValue = doc.createElement('b')
-      yesterdayValue.className = 'dsh-tu-pet-stat-value'
-      yesterdayStat.append(yesterdayLabel, yesterdayValue)
-
-      stats.append(todayStat, rateStat, yesterdayStat)
-
-      // 组装顺序：标题栏 → 累计数字 → **充能块 + 池**（视觉主体）→ 仪表行（细节）。
+      // 组装顺序：标题栏 → 累计数字 → **进度条 + 池**（视觉主体）。
       //
-      // ⚠️ 充能块要紧跟累计数字：它是「当前这块填了多少」——和累计是同一件事的
-      // 两个尺度（总量 / 当前进度）。仪表行是附加细节，放最后。
-      // 早先仪表行夹在中间，把「充能 → 池」这个动作拆散了。
-      root.append(head, total, charge, foot, stats)
+      // ⚠️ 进度条要紧跟累计数字：它是「当前这块填了多少」——和累计是同一件事的
+      // 两个尺度（总量 / 当前进度）。
+      root.append(head, total, charge, foot)
       doc.body.appendChild(root)
 
       // ── 状态 ──
-      let scope = 'all'
+      // ⚠️ 已无 `scope`：桌宠不再有「累计 / 今日」切换。早先那个切换是为了让
+      // 大数字在两者间选一个，而「今日」已作为冗余读数移除（见上），切换失去对象。
       let collapsed = petReadCollapsed()
       let disposed = false
       let drag = null
@@ -2435,46 +2365,26 @@ window.__ModuleLoader__.load({
           })
         }
 
-        const totalTokens = scope === 'today'
-          ? Number(data?.totals?.totalTokens) || 0
-          : Number(data?.allTime?.totalTokens) || 0
+        // ⚠️ 大数字与池**都取全时累计**（不随 scope 变）。
+        //
+        // 池永远是「攒下的全部块数」——它是这插件的身份读数，一个会话通常
+        // 只有 0.2 块，若让池跟随会话就会长期显示 0 块，彻底失去意义（见 PR2）。
+        const totalTokens = Number(data?.allTime?.totalTokens) || 0
         const wall = blockWall(totalTokens)
 
         totalValue.textContent = compact(totalTokens)
 
-        // 充能块：当前这一块填了多少（0~100%）。
+        // 进度条：当前这一块填了多少（0~100%）。
         const pct = Math.round(wall.progress * 100)
         chargeFill.style.width = `${(wall.progress * 100).toFixed(2)}%`
         chargePct.textContent = `${pct}%`
-        // 快满了给它一个「即将落块」的强调（充能到 90% 以上）。
+        // 快满了给它一个强调（>= 90%）。
+        // PR1 语义是「即将落块」；PR2 换成上下文占用后变成「即将被压缩」。
         chargeBlock.classList.toggle('is-almost', wall.progress >= 0.9)
 
         // 池：已攒下的整块数。
         poolLabel.textContent = `${wall.filled} ${t('wallBlockUnit')}`
         pool.title = `${wall.filled} × ${compact(BLOCK_UNIT)} = ${compact(totalTokens)}`
-
-        // 仪表行：今日量 + 占累计的比例 + 细填充条 + 平均速度 + 昨日参照。
-        const todayTokens = Number(data?.totals?.totalTokens) || 0
-        const allTimeTokens = Number(data?.allTime?.totalTokens) || 0
-        const share = allTimeTokens > 0 ? (todayTokens / allTimeTokens) * 100 : 0
-        todayValue.textContent = compact(todayTokens)
-        todayShare.textContent = `${share.toFixed(1)}%`
-        todayBarFill.style.width = `${Math.max(0, Math.min(100, share)).toFixed(2)}%`
-
-        // 速度 = **本次运行**的平均消耗（host 的 run 字段）。
-        //
-        // ⚠️ 早先这里用的是「累计值的相邻采样变化率」，那个指标**在空闲时恒为 0**
-        // （累计值只在有新调用时才变）→ 99% 的时间显示「—」，等于没有这个指标。
-        // 本次运行的总消耗 ÷ 已运行时长不会归零：用过就有数，不用时是稳定均值。
-        const run = data?.run
-        const runTokens = Number(run?.tokens) || 0
-        const runElapsedSec = (Number(run?.elapsedMs) || 0) / 1000
-        const avgRate = runElapsedSec > 0 ? runTokens / runElapsedSec : 0
-        rateValue.textContent = avgRate >= 1 ? `${compact(Math.round(avgRate))}/s` : '—'
-
-        // 昨日参照。
-        const yesterdayTokens = Number(data?.yesterday?.totals?.totalTokens) || 0
-        yesterdayValue.textContent = yesterdayTokens > 0 ? compact(yesterdayTokens) : '—'
 
         // 当前工作区 chip（host 告知的「当前会话是哪个」）。
         const currentCwd = typeof data?.current?.workspace === 'string' ? data.current.workspace : ''
@@ -2487,7 +2397,7 @@ window.__ModuleLoader__.load({
         }
 
         // 只有内容真的变了才碰 DOM：避免无谓的样式写入打断 CSS 过渡。
-        const key = `${wall.filled}|${wall.progress.toFixed(4)}|${todayTokens}|${avgRate.toFixed(1)}|${currentCwd}`
+        const key = `${wall.filled}|${wall.progress.toFixed(4)}|${currentCwd}`
         if (key === lastRenderKey) return
         lastRenderKey = key
 
