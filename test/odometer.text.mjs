@@ -157,13 +157,18 @@ console.log('')
 // 主读数换成会话，是因为用户真正想问的是「这次对话花了多少」。
 check('显示「本会话」标签', joined.includes('本会话'), joined.slice(0, 140))
 
-// ⚠️ 今日 / 速度 / 昨日 三个读数已**从桌宠移除**（见 client.js 的说明）。
-// 它们都回答「过去怎么样」，而桌宠该回答「现在有没有事」；腾出的位置在
-// PR2 交给「本会话用量」与「上下文占用」两个有后果的读数。
+// ⚠️ 速度 / 昨日 已**从桌宠移除**；但「今日」作为**附加读数**回来了。
 //
-// 所以这里的断言从「必须显示」翻转为「必须不显示」——否则移除会被无声回滚。
-check('不再显示「今日」标签', !joined.includes('今日'), joined.slice(0, 140))
-check('不再显示今日数字 142.59M', !joined.includes('142.59M'), joined.slice(0, 140))
+// 演变过程值得记一笔，因为它说明「移除」不等于「永不再加」：
+// - PR1 把 今日/速度/昨日 一起移除（它们都回答「过去怎么样」，而桌宠该回答
+//   「现在有没有事」）；
+// - 之后用户反馈「过于单调」，于是 今日 以**补充读数**的身份回来——它现在住在
+//   最下面那行（`缓存 x% · 今日 y`），字号更小、颜色更弱，不再当主读数。
+//
+// 所以断言要跟着**位置与权重**走，而不是简单地「有/没有」：今日 必须在，但
+// 速度/昨日 仍然不在。
+check('「今日」作为附加读数回来了', joined.includes('今日'), joined.slice(0, 160))
+check('今日数字 142.59M 显示在附加读数行', joined.includes('142.59M'), joined.slice(0, 160))
 check('不再显示「速度」标签', !joined.includes('速度'), joined.slice(0, 140))
 check('不再显示速度读数 5.0K/s', !/5\.0K\/s/.test(joined), joined.slice(0, 140))
 check('不再显示「昨日」参照', !joined.includes('昨日'), joined.slice(0, 140))
@@ -183,11 +188,15 @@ check('保留池：显示全时累计块数（58 块）', joined.includes('58 �
 // ── 降级：没有会话数据时不许显示 0 ────────────────────────────────────
 //
 // 这份 TODAY mock **不带** `session` 字段（模拟「桥没挂载」：用户切到了方块墙
-// 面板或设置页）。此时桌宠必须显示 `—`，绝不能画成「0 tokens」——
+// 面板或设置页）。此时会话类读数必须显示 `—`，绝不能画成「0 tokens」——
 // 「读不到」和「花了 0」是两件完全不同的事。
-check('无会话数据时大数字显示 —', joined.includes('—'), joined.slice(0, 140))
-check('无会话数据时上下文条显示 —', joined.includes('—'), joined.slice(0, 140))
-check('无会话数据时不显示 0 作为会话用量', !/本会话\s*0\b/.test(joined), joined.slice(0, 140))
+//
+// ⚠️ 但**进度条与池不受影响**：它们来自本地日聚合，与会话无关。这是这次拆分
+// 的关键收益——会话数据缺失时，桌宠仍有一半读数可用。
+check('无会话数据时大数字显示 —', joined.includes('—'), joined.slice(0, 160))
+check('无会话数据时上下文读数显示 —', /上下文\s*—/.test(joined), joined.slice(0, 200))
+check('无会话数据时不显示 0 作为会话用量', !/本会话\s*0\b/.test(joined), joined.slice(0, 160))
+check('无会话数据时进度条照常显示块进度', /\d+%/.test(joined), joined.slice(0, 160))
 
 // 池与「本会话」必须是两个独立的数：池不跟随会话。
 check('池与「本会话」并存（两个不同来源）',
@@ -232,6 +241,11 @@ check('有会话数据：本轮显示 41.0K', joined2.includes('41.0K'), joined2
 check('有会话数据：上下文显示 71%', joined2.includes('71%'), joined2.slice(0, 160))
 check('有会话数据：池仍显示全时 58 块（不跟随会话）',
   joined2.includes('58 块'), joined2.slice(0, 160))
+
+// 缓存命中率：这份 mock 的 cacheRead=0 → 分母 = 2.13M，命中率 0.0%。
+// 断言它**渲染了数字**（而不是 `—`），因为这是「输入侧」指标算得出来的情况。
+check('有会话数据：缓存命中率渲染为百分比', /缓存\s*0\.0%/.test(joined2), joined2.slice(0, 200))
+check('有会话数据：今日量渲染', /今日\s*142\.59M/.test(joined2), joined2.slice(0, 200))
 
 console.log(`\n结果: ${failures.length === 0 ? '全部通过 ✓' : `${failures.length} 处失败 ✗`}`)
 for (const f of failures) console.log('  ' + f)

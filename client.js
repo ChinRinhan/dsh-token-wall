@@ -115,6 +115,7 @@ window.__ModuleLoader__.load({
       contextLabel: '上下文',
       contextUnavailable: '上下文占用暂不可用',
       contextCollapsedHint: '上下文接近上限，快会被压缩',
+      cacheHitLabel: '缓存',
       navWall: 'Token 方块墙',
       kindChat: '对话调用',
       kindAux: '辅助调用（压缩等）',
@@ -219,6 +220,7 @@ window.__ModuleLoader__.load({
       contextLabel: 'Context',
       contextUnavailable: 'Context usage unavailable',
       contextCollapsedHint: 'Context nearly full — compaction is close',
+      cacheHitLabel: 'cache',
       navWall: 'Token Block Wall',
       kindChat: 'Chat calls',
       kindAux: 'Auxiliary calls (compaction etc.)',
@@ -800,6 +802,12 @@ window.__ModuleLoader__.load({
   border-color: var(--dsw-alias-brand-primary);
   animation: dsh-tu-breathe 1.4s ease-in-out infinite;
 }
+/* 严重度着色：只给**上下文读数**用，不给进度条用。
+   ⚠️ 进度条表达的是「积累进度」（还差多少攒满一块），不是告警——把它染红会让
+   用户以为「块要炸了」。真正有后果的是上下文占用，所以颜色只出现在附加读数里。
+   ⚠️ 只用主题 token（--dsw-alias-state-*），写死颜色在深色主题里会刺眼。 */
+#dsh-tu-pet .dsh-tu-pet-meta-value.is-warn { color: var(--dsw-alias-state-warn-primary); }
+#dsh-tu-pet .dsh-tu-pet-meta-value.is-danger { color: var(--dsw-alias-state-error-primary); }
 #dsh-tu-pet .dsh-tu-pet-charge-pct {
   flex: 0 0 auto; min-width: 34px; text-align: right;
   font-size: 10px; color: var(--dsw-alias-label-secondary);
@@ -827,6 +835,19 @@ window.__ModuleLoader__.load({
 }
 /* 攒到新的一块：池弹一下。 */
 #dsh-tu-pet .dsh-tu-pet-pool.is-new { animation: dsh-tu-pool-pop 600ms ease-out; }
+/* 附加读数行：缓存命中率 / 今日量。比主读数弱一档——它们是补充，不是主角。 */
+#dsh-tu-pet .dsh-tu-pet-meta {
+  display: flex; align-items: center; gap: 4px 10px; flex-wrap: wrap;
+  padding: 0 10px 8px; font-size: 10px;
+  color: var(--dsw-alias-label-tertiary);
+}
+#dsh-tu-pet .dsh-tu-pet-meta-item {
+  display: inline-flex; align-items: baseline; gap: 3px; white-space: nowrap;
+}
+#dsh-tu-pet .dsh-tu-pet-meta-value {
+  color: var(--dsw-alias-label-secondary); font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
 @keyframes dsh-tu-pool-pop {
   0% { transform: scale(1); }
   30% { transform: scale(1.12); }
@@ -841,8 +862,10 @@ window.__ModuleLoader__.load({
   #dsh-tu-pet .dsh-tu-pet-pool.is-new { animation: none; }
 }
 /* 折叠态：只留标题栏 + 大数字 + 池。
-   ⚠️ 池在折叠态**保留**：它是桌面常驻形态里唯一「只增不减」的成就读数。 */
-#dsh-tu-pet.is-collapsed .dsh-tu-pet-charge { display: none; }
+   ⚠️ 池在折叠态**保留**：它是桌面常驻形态里唯一「只增不减」的成就读数。
+   附加读数行（缓存/今日）折叠时隐藏——折叠态要的是「一眼看到有没有事」。 */
+#dsh-tu-pet.is-collapsed .dsh-tu-pet-charge,
+#dsh-tu-pet.is-collapsed .dsh-tu-pet-meta { display: none; }
 #dsh-tu-pet.is-collapsed .dsh-tu-pet-total { padding: 7px 10px 0; }
 #dsh-tu-pet.is-collapsed .dsh-tu-pet-pool { padding: 2px 10px 8px; }
 /* 窄屏隐藏桌宠：拖拽手势会与页面滚动打架（与 tarkov 桌宠同一取舍）。 */
@@ -2366,10 +2389,47 @@ window.__ModuleLoader__.load({
       turnLabel.className = 'dsh-tu-pet-stat-dim'
       pool.append(poolIcon, poolLabel, turnLabel)
 
+      // 附加读数行：缓存命中率 + 今日量。
+      //
+      // 为什么是这两个：
+      // - **缓存命中率**是成本的主要驱动（实测本会话 119M 里 118.6M 是缓存读取），
+      //   而它一直只藏在 harness 的详情弹窗里；
+      // - **今日量**给一个「今天的节奏」参照，而它本来就在 `/today` 的响应里，
+      //   不下发到桌宠是白丢。
+      //
+      // 两者都是「补充读数」，所以字号更小、颜色更弱（`label-tertiary`）——
+      // 主读数仍然只有「本会话」和上下文条。
+      const meta = doc.createElement('div')
+      meta.className = 'dsh-tu-pet-meta'
+      // 上下文占用：从进度条降级到这里（见渲染段说明）。它仍然是**唯一有后果**的
+      // 读数——快满会被压缩——所以放在第一位，且占用高时它会变色。
+      const ctxItem = doc.createElement('span')
+      ctxItem.className = 'dsh-tu-pet-meta-item'
+      const ctxLabel = doc.createElement('span')
+      ctxLabel.textContent = t('contextLabel')
+      const ctxValue = doc.createElement('span')
+      ctxValue.className = 'dsh-tu-pet-meta-value'
+      ctxItem.append(ctxLabel, ctxValue)
+      const cacheItem = doc.createElement('span')
+      cacheItem.className = 'dsh-tu-pet-meta-item'
+      const cacheLabel = doc.createElement('span')
+      cacheLabel.textContent = t('cacheHitLabel')
+      const cacheValue = doc.createElement('span')
+      cacheValue.className = 'dsh-tu-pet-meta-value'
+      cacheItem.append(cacheLabel, cacheValue)
+      const todayItem = doc.createElement('span')
+      todayItem.className = 'dsh-tu-pet-meta-item'
+      const todayLabelEl = doc.createElement('span')
+      todayLabelEl.textContent = t('statusBarLabel')
+      const todayValue = doc.createElement('span')
+      todayValue.className = 'dsh-tu-pet-meta-value'
+      todayItem.append(todayLabelEl, todayValue)
+      meta.append(ctxItem, cacheItem, todayItem)
+
       const foot = pool
 
-      // 组装顺序：标题栏 → 本会话大数字 → **上下文条 + 池**（视觉主体）。
-      root.append(head, total, charge, foot)
+      // 组装顺序：标题栏 → 本会话大数字 → **上下文条 + 池**（视觉主体）→ 附加读数。
+      root.append(head, total, charge, foot, meta)
       doc.body.appendChild(root)
 
       // ── 状态 ──
@@ -2468,22 +2528,26 @@ window.__ModuleLoader__.load({
           ? Math.max(0, Math.min(1, usedTokens / windowTokens))
           : undefined
 
-        if (occupancy === undefined) {
-          // 没有上下文数据：清空填充、显示 —，而不是留一个假的 0% 条。
-          chargeFill.style.width = '0%'
-          chargePct.textContent = '—'
-          chargeBlock.classList.remove('is-almost')
-          chargeBlock.title = t('contextUnavailable')
-        } else {
-          chargeFill.style.width = `${(occupancy * 100).toFixed(2)}%`
-          chargePct.textContent = `${Math.round(occupancy * 100)}%`
-          chargeBlock.classList.toggle('is-almost', occupancy >= 0.9)
-          chargeBlock.title = `${t('contextLabel')} ${compact(usedTokens)} / ${compact(windowTokens)}`
-        }
-
-        // 池：**全时累计**块数（不随会话变）。
+        // ── 进度条 = **当前这个 10M 方块的填充进度** ─────────────────────
+        //
+        // ⚠️ 这里曾经试过把进度条换成「上下文占用」，结论是**不对**：
+        // 上下文百分比是个「状态读数」，不是「积累进度」。进度条这个形状在
+        // 用户心里对应的是「还差多少攒满一块」，换成上下文会让它和池脱节
+        // （池在讲块数，条在讲窗口占用，两者不是同一个量纲）。
+        //
+        // 所以职责分清了：
+        // - **条**：块的填充进度（和池同一个量纲，`blockWall().progress`）；
+        // - **上下文**：降级成下面附加读数行里的一个百分比（`上下文 49%`）。
         const totalTokens = Number(data?.allTime?.totalTokens) || 0
         const wall = blockWall(totalTokens)
+        const progressPct = Math.round(wall.progress * 100)
+        chargeFill.style.width = `${(wall.progress * 100).toFixed(2)}%`
+        chargePct.textContent = `${progressPct}%`
+        // 快攒满一块（>= 90%）：轻微呼吸，提示「马上要落块了」。
+        chargeBlock.classList.toggle('is-almost', wall.progress >= 0.9)
+        chargeBlock.title = `${t('wallNext')} ${compact(wall.remainder)} / ${compact(BLOCK_UNIT)}`
+
+        // 池：**全时累计**块数（不随会话变）。
         poolLabel.textContent = `${wall.filled} ${t('wallBlockUnit')}`
         pool.title = `${wall.filled} × ${compact(BLOCK_UNIT)} = ${compact(totalTokens)}`
 
@@ -2493,6 +2557,48 @@ window.__ModuleLoader__.load({
           turnLabel.textContent = ''
         } else {
           turnLabel.textContent = `· ${t('turnLabel')} ${compact(turnTokens)}`
+        }
+
+        // ── 附加读数 ────────────────────────────────────────────────────
+        //
+        // 缓存命中率 = 缓存读取 / 计费输入（未缓存 + 缓存读 + 缓存写）。
+        // 分母为 0（还没有任何输入）时显示 `—`，不算成 0%。
+        //
+        // ⚠️ 不能把 outputTokens 放进分母：命中率是**输入侧**的概念，
+        // 混进输出会让它随回复长度漂移，失去「这家的缓存好不好用」的含义。
+        const billedInput = tokenUsage === undefined || tokenUsage === null
+          ? undefined
+          : Number(tokenUsage.uncachedInputTokens) + Number(tokenUsage.cacheReadTokens)
+            + Number(tokenUsage.cacheWriteTokens)
+        const cacheHit = billedInput !== undefined && Number.isFinite(billedInput) && billedInput > 0
+          ? (Number(tokenUsage.cacheReadTokens) / billedInput) * 100
+          : undefined
+        cacheValue.textContent = cacheHit === undefined ? '—' : `${cacheHit.toFixed(1)}%`
+        cacheItem.title = cacheHit === undefined
+          ? t('contextUnavailable')
+          : `${t('cacheHitLabel')} ${compact(Number(tokenUsage.cacheReadTokens))} / ${compact(billedInput)}`
+
+        // 今日量：`/today` 本来就下发，桌宠不下发是白丢。
+        const todayTokens = Number(data?.totals?.totalTokens)
+        todayValue.textContent = Number.isFinite(todayTokens) && todayTokens > 0
+          ? compact(todayTokens)
+          : '—'
+
+        // 上下文占用：**不再是进度条**，而是这里的一个百分比读数。
+        //
+        // 但它仍然是唯一「有后果」的读数（快满会被压缩），所以占用高时这一格
+        // 会变色——颜色只在这里出现，进度条保持单色（它是积累进度，不是告警）。
+        if (occupancy === undefined) {
+          ctxValue.textContent = '—'
+          ctxValue.classList.remove('is-warn', 'is-danger')
+          ctxItem.title = t('contextUnavailable')
+        } else {
+          ctxValue.textContent = `${Math.round(occupancy * 100)}%`
+          const danger = occupancy >= 0.85
+          const warn = !danger && occupancy >= 0.6
+          ctxValue.classList.toggle('is-danger', danger)
+          ctxValue.classList.toggle('is-warn', warn)
+          ctxItem.title = `${t('contextLabel')} ${compact(usedTokens)} / ${compact(windowTokens)}`
         }
 
         // 当前工作区 chip（host 告知的「当前会话是哪个」）。
@@ -2512,9 +2618,14 @@ window.__ModuleLoader__.load({
         // 只有内容真的变了才碰 DOM：避免无谓的样式写入打断 CSS 过渡。
         const key = [
           wall.filled,
+          // 进度条现在跟 wall.progress 走（块内填充），不能只看 filled——
+          // 否则同一块内从 10% 涨到 80% 时 key 不变，条不会重绘。
+          wall.progress.toFixed(4),
           occupancy === undefined ? 'na' : occupancy.toFixed(4),
           sessionTokens === undefined ? 'na' : sessionTokens,
           turnTokens === undefined ? 'na' : turnTokens,
+          cacheHit === undefined ? 'na' : cacheHit.toFixed(2),
+          Number.isFinite(todayTokens) ? todayTokens : 'na',
           currentCwd,
           collapsed ? 1 : 0,
         ].join('|')

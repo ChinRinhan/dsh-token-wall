@@ -165,4 +165,13 @@ export const USED_TOKENS = [
   'brand-primary',
   'state-error-primary',
   'interactive-bg-hover',
+  // 上下文读数的严重度着色（PR2 之后加的）。
+  //
+  // ⚠️ state-warn-primary 是**在宿主主题里真实存在**的语义色（已用
+  // readThemeTokens 验过：rgb(245,158,11)）。加进这份清单不是「让测试闭嘴」，
+  // 而是声明本插件**有意**使用它——清单本身就是「允许引用的 token 集合」。
+  //
+  // 只加这一个：state-error-primary 上面已有；进度条保持单色（它是积累进度，
+  // 不是告警），所以不需要 secondary 那一档。
+  'state-warn-primary',
 ]

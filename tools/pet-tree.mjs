@@ -147,4 +147,53 @@ console.log(!poolHidden ? 'OK   折叠态未隐藏池' : 'FAIL 折叠态隐藏�
 
 const ok = order === expected && leaked.length === 0 && isCollapsed && btnLabel === '+'
   && stillHasPool && hideChargeRe.test(cssText)
-process.exitCode = ok ? 0 : 1
+
+// ── 带真实形状数据的完整渲染 ─────────────────────────────────────────
+//
+// 上面那份 mock 不带 `session`，所以缓存/本轮都是 `—`。这里换成一份接近真实
+// 的响应，把桌宠实际会显示的文字打出来——这是「数据够不够、会不会挤」唯一
+// 离线可看的形式。
+const WITH_SESSION = {
+  ...TODAY,
+  session: {
+    id: 'sess-demo',
+    live: { sessionTokens: 1_472_899, turnTokens: 1_472_899, turn: 16, steps: 3 },
+    projected: {
+      tokenUsage: {
+        uncachedInputTokens: 1_042_250,
+        outputTokens: 268_267,
+        cacheReadTokens: 118_583_936,
+        cacheWriteTokens: 0,
+      },
+      contextPressure: {
+        contextWindow: 1_000_000,
+        pressureTokens: 491_288,
+        projectedTokens: 491_473,
+      },
+    },
+  },
+}
+globalThis.fetch = async () => ({ ok: true, status: 200, json: async () => WITH_SESSION })
+const beforeFull = new Set(env.body.children)
+instance.apply(ctx)
+const fullPet = env.body.children.find((c) => !beforeFull.has(c))
+for (let i = 0; i < 24; i += 1) await Promise.resolve()
+await new Promise((r) => setTimeout(r, 0))
+await new Promise((r) => setTimeout(r, 0))
+
+console.log('\n=== 带会话数据时的完整结构 ===\n')
+dump(fullPet)
+
+const fullText = []
+;(function collect(n) {
+  if (n._text !== undefined && n._text !== '') fullText.push(String(n._text))
+  for (const c of n.children ?? []) collect(c)
+})(fullPet)
+console.log(`\n渲染出来的文字: ${JSON.stringify(fullText)}`)
+
+const hasCache = fullText.some((s) => /^\d+\.\d%$/.test(s))
+const hasTurn = fullText.some((s) => s.includes('1.47M') && s.startsWith('·'))
+console.log(hasCache ? 'OK   缓存命中率已渲染' : 'FAIL 缓存命中率缺失')
+console.log(hasTurn ? 'OK   本轮已渲染' : 'FAIL 本轮缺失')
+
+process.exitCode = ok && hasCache && hasTurn ? 0 : 1

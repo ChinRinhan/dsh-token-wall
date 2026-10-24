@@ -241,19 +241,19 @@ for (const total of CASES) {
     ok ? `filled=${expected.filled} partial@${states.indexOf('partial')}` : `client=${states.slice(0, 12).join(',')} lib=${expectedStates.slice(0, 12).join(',')}`)
 }
 
-console.log('\n=== 桌宠「上下文条 + 池」vs lib/blocks.js ===')
+console.log('\n=== 桌宠「进度条 + 池」vs lib/blocks.js ===')
 //
-// ⚠️ 桌宠的进度条**已经不再由 blockWall 驱动**：它现在是「上下文占用」
-// （`projectedTokens / contextWindow`，快满会被压缩），而池仍然是
-// 「全时累计块数」。所以跨端校验的对象只剩池：
+// ⚠️ 这里曾经把进度条改成「上下文占用」，后来**改回来了**：进度条这个形状在
+// 用户心里对应的是「还差多少攒满一块」，和池是同一个量纲；换成上下文会让条和池
+// 脱节（条讲窗口占用、池讲块数）。上下文现在降级成附加读数行里的一个百分比。
 //
-// - 池里显示的块数  ==  blockWall().filled
+// 所以跨端校验的对象恢复成两个，而且都必须由 blockWall 驱动：
+//
+// - 进度条的填充比例  ==  blockWall().progress
+// - 池里显示的块数    ==  blockWall().filled
 //
 // 这仍是**跨端校验**：`lib/blocks.js` 是 host 侧实现，桌宠是客户端的手写
-// 命令式 DOM；两边对同一个 total 必须算出同样的块数。
-//
-// 进度条的新语义由本文件末尾的「上下文条」一组单独覆盖——它**不能**再和
-// blockWall 比对，否则会把「上下文占用」悄悄退回成「10M 进度」。
+// 命令式 DOM；两边对同一个 total 必须算出同样的进度与块数。
 
 /** 从桌宠 DOM 里取 { chargeWidth, chargePct, poolText }。 */
 function petChargeAndPool(root) {
@@ -278,22 +278,26 @@ for (const total of [0, 5_000_000, 10_000_000, 65 * 10_000_000 + 704_221, 150 * 
   const petEl = await petRender(total)
   check(`pet total=${total.toLocaleString()} 已创建桌宠元素`, petEl !== undefined)
   const { chargeWidth, chargePct, poolText } = petChargeAndPool(petEl)
+  // 进度条：client 写的是 `${(progress*100).toFixed(2)}%`。
+  const expectedWidth = `${(w.progress * 100).toFixed(2)}%`
+  check(`pet total=${total.toLocaleString()} 块内进度一致`, chargeWidth === expectedWidth,
+    `dom=${chargeWidth} lib=${expectedWidth}`)
+  check(`pet total=${total.toLocaleString()} 进度百分比文字一致`,
+    chargePct === `${Math.round(w.progress * 100)}%`, `dom=${chargePct}`)
   // 池里显示的块数：client 写的是 `${filled} 块`。
   check(`pet total=${total.toLocaleString()} 池内块数一致`, poolText.startsWith(String(w.filled)),
     `dom=${JSON.stringify(poolText)} lib filled=${w.filled}`)
-  // 没有会话数据（这个 mock 不带 session）时，上下文条必须显式「不可用」，
-  // 而不是留一个看起来像 0% 的假进度。
-  check(`pet total=${total.toLocaleString()} 无会话数据时上下文条显示 —`,
-    chargeWidth === '0%' && chargePct === '—',
-    `width=${chargeWidth} pct=${chargePct}`)
 }
 
-console.log('\n=== 桌宠「上下文条」由 contextPressure 驱动（不是 10M 进度）===')
+console.log('\n=== 上下文不再是进度条，而是读数 ===')
 //
-// 这条断言存在的理由：进度条从「10M 充能」换成「上下文占用」后，最容易发生的
-// 事故是**悄悄退回旧语义**——毕竟两条路径都写 `chargeFill.style.width`，
-// 单看代码很难发现喂进去的是哪个数。所以这里直接喂一份带 `contextPressure`
-// 的会话数据，断言宽度等于 `projectedTokens / contextWindow`。
+// 这条断言存在的理由：进度条曾被改成上下文占用，又改回来。若不锁住，
+// 未来某次重构很可能再次把两者混在一起——那时「条」和「池」量纲不一致，
+// 用户会看不懂 49% 到底是块还是窗口。
+//
+// 所以直接喂一份上下文占用 71% 的会话数据，断言：
+// 1. 进度条仍然是**块进度**（29.70%），不是 71%；
+// 2. 71% 出现在附加读数行的「上下文」那一格。
 
 /** 带会话数据的 /today mock。 */
 function mockFetchWithSession({ total, sessionTokens, pressure }) {
@@ -329,34 +333,53 @@ async function petRenderWithSession(opts) {
   return created
 }
 
+/** 取附加读数行里每一格的值文字。 */
+function metaValues(root) {
+  const out = []
+  const walk = (n) => {
+    if (String(n.className ?? '').split(/\s+/).includes('dsh-tu-pet-meta-value')) out.push(n._text)
+    for (const c of n.children ?? []) walk(c)
+  }
+  walk(root)
+  return out
+}
+
+const TOTAL = 500_000_000
+const TOTAL_WALL = libBlockWall(TOTAL)
+const EXPECTED_BAR = `${(TOTAL_WALL.progress * 100).toFixed(2)}%`
+
 for (const { used, window: win } of [
   { used: 32_000, window: 128_000 },   // 25%
   { used: 710_000, window: 1_000_000 }, // 71%
   { used: 0, window: 1_000_000 },       // 0%
 ]) {
   const el = await petRenderWithSession({
-    total: 500_000_000,
+    total: TOTAL,
     sessionTokens: 2_130_000,
     pressure: { contextWindow: win, pressureTokens: used, projectedTokens: used },
   })
   const { chargeWidth, chargePct } = petChargeAndPool(el)
-  const expected = `${((used / win) * 100).toFixed(2)}%`
-  check(`上下文 ${used}/${win} 宽度 == projectedTokens/contextWindow`, chargeWidth === expected,
-    `dom=${chargeWidth} expected=${expected}`)
-  check(`上下文 ${used}/${win} 百分比文字`, chargePct === `${Math.round((used / win) * 100)}%`,
-    `dom=${chargePct}`)
+  const ctxPct = `${Math.round((used / win) * 100)}%`
+  // ① 进度条**不受**上下文影响：它只跟 blockWall 走。
+  check(`上下文 ${ctxPct} 时进度条仍是块进度 ${EXPECTED_BAR}`,
+    chargeWidth === EXPECTED_BAR && chargePct === `${Math.round(TOTAL_WALL.progress * 100)}%`,
+    `dom=${chargeWidth}/${chargePct} expected=${EXPECTED_BAR}`)
+  // ② 上下文百分比出现在读数行里（第一格就是它）。
+  const values = metaValues(el)
+  check(`上下文 ${ctxPct} 出现在读数行`, values[0] === ctxPct, `values=${JSON.stringify(values)}`)
 }
 
-// 没有 contextWindow 时不能瞎算——显示不可用。
+// 没有 contextWindow 时不能瞎算——显示 —，但**进度条照常**。
 {
   const el = await petRenderWithSession({
-    total: 500_000_000,
+    total: TOTAL,
     sessionTokens: 2_130_000,
     pressure: { pressureTokens: 5000 }, // 缺 contextWindow
   })
-  const { chargeWidth, chargePct } = petChargeAndPool(el)
-  check('缺 contextWindow 时不瞎算，显示 —', chargeWidth === '0%' && chargePct === '—',
-    `width=${chargeWidth} pct=${chargePct}`)
+  const { chargeWidth } = petChargeAndPool(el)
+  const values = metaValues(el)
+  check('缺 contextWindow 时上下文显示 —', values[0] === '—', `values=${JSON.stringify(values)}`)
+  check('缺 contextWindow 不影响进度条', chargeWidth === EXPECTED_BAR, `dom=${chargeWidth}`)
 }
 
 console.log(`\n结果: ${failures.length === 0 ? '全部一致 ✓' : `${failures.length} 处不一致 ✗`}`)
