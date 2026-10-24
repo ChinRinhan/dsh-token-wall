@@ -45,8 +45,9 @@ ls -l ~/.dsh/profiles/<profile>/node_modules/dsh-token-wall
 **期望**
 
 - 大数字显示 `—`（不是 `0`、不是 `0 tok`）。
-- 上下文条显示 `—`，填充宽度 0。
-- 池（N 块）**仍然正常显示**——它不依赖会话。
+- 附加读数行里的「上下文」与「缓存」显示 `—`。
+- **进度条与池仍然照常**——它们来自本地日聚合，与会话无关。这是把「会话读数」
+  与「积累读数」拆开之后的主要收益：会话数据缺失时，桌宠仍有一半可用。
 
 **反向确认**：回到对话页，约 1 秒内大数字应变成真实数字。
 
@@ -68,7 +69,9 @@ ls -l ~/.dsh/profiles/<profile>/node_modules/dsh-token-wall
 **期望**
 
 - 大数字在 1~2 秒内显示该会话的真实用量，**不是 `—`、不是 0**。
-- 上下文条也应有值（若该会话发生过请求）。
+- 附加读数行里的「上下文」也应有值（若该会话发生过请求）。
+- **「本轮 / 上一轮」也应当立刻有值**——冷读会把同一份日志顺手折一遍播种逐轮
+  状态（见 `seedTurnsFromEvents`）。若这两项是空的，说明播种没生效。
 - 首次可能有一拍延迟（要解日志），之后稳定。
 
 **若显示 `—`**：查 `projectedUnavailable` 字段说明原因：
@@ -121,7 +124,7 @@ curl "http://127.0.0.1:<port>/dsh-token-usage/today?session=<会话id>" | jq .se
 
 ---
 
-## 5. 上下文条与 harness 自己的 context meter 大致一致
+## 5. 上下文读数与 harness 自己的 context meter 大致一致
 
 **为什么重要**：两处都在表达「上下文占了多少」。口径若不同（比如我们用了
 `pressureTokens` 而 harness 用 `projectedTokens`），用户会看到两个矛盾的百分比。
@@ -129,13 +132,16 @@ curl "http://127.0.0.1:<port>/dsh-token-usage/today?session=<会话id>" | jq .se
 **步骤**
 
 1. 打开一个上下文占用较高的会话。
-2. 对比桌宠的百分比与输入框附近 harness 的 context meter。
+2. 对比桌宠附加读数行里的「上下文 NN%」与输入框附近 harness 的 context meter。
 
 **期望**
 
 - 两者**接近**（允许 1~2% 的取整差异）。
-- 都接近 90% 时，桌宠的进度条应开始轻微呼吸（`is-almost`）。
+- 占用高（≥ 85%）时，那一格**数字**转红；≥ 60% 转黄。
 - 折叠态此时应切换成显示百分比（而不是本会话量）。
+
+⚠️ **注意别验错对象**：进度条表达的是「当前 10M 方块填了多少」，**不是**上下文。
+它只在该块 ≥ 90% 时才开始呼吸，与上下文占用无关。
 
 ---
 
@@ -173,9 +179,10 @@ curl "http://127.0.0.1:<port>/dsh-token-usage/today?session=<会话id>" | jq .se
 | 项目 | 覆盖它的测试 |
 |---|---|
 | 逐轮折叠语义（重试累加 / 同步骤替换 / reasoning 不进总量 / 缺边界容错） | `test/turn-fold.test.mjs` |
-| 三级降级、租约释放、多会话不串台 | `test/host.session.test.mjs` |
-| 上下文条由 `contextPressure` 驱动（不是 10M 进度） | `test/blocks-cross.test.mjs` |
-| 无会话数据必须显示 `—` | `test/odometer.text.mjs` |
+| 三级降级、租约按 `[Symbol.dispose]` 释放、冷读播种、多会话不串台 | `test/host.session.test.mjs` |
+| 进度条 == `blockWall().progress`，且**上下文百分比不影响它** | `test/blocks-cross.test.mjs` |
+| 无会话数据必须显示 `—`（且进度条与池照常） | `test/odometer.text.mjs` |
+| 附加读数（上下文 / 缓存 / 今日）、上一轮 tooltip | `test/odometer.text.mjs` |
 | 桥独立注册、不受 prefs 控制、渲染 null | `test/client.smoke.mjs` |
 | 折叠结果与宿主投影一致（真实日志） | `tools/cross-validate-turns.mjs` |
-| 桌宠结构顺序与折叠态 | `tools/pet-tree.mjs` |
+| 桌宠结构顺序与折叠态 CSS | `tools/pet-tree.mjs` |

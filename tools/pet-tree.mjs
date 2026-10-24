@@ -104,15 +104,23 @@ const allText = []
   for (const c of n.children ?? []) collectText(c)
 })(root)
 console.log(`\n全部文本: ${JSON.stringify(allText)}`)
-const banned = ['今日', '速度', '昨日', 'Today', 'Rate', 'Yesterday']
+// ⚠️ 禁用标签表必须跟着产品决策走。
+//
+// 这份清单在 PR1 时是「今日/速度/昨日」全禁；后来用户反馈「过于单调」，`今日`
+// 以**补充读数**身份回来了（住在最下面一行，不再当主读数）。所以现在只禁
+// 速度/昨日——把 `今日` 留在表里，这个工具就会在正确实现上永远 FAIL，
+// 而没人会去修一个永远红的工具，于是它整体失去意义。
+//
+// 词典键在测试里是原样输出的（`t` 是恒等函数），所以这里比对的是**键名**与
+// 中文兜底两种形态。
+const banned = ['速度', '昨日', 'Rate', 'Yesterday', 'rate', 'yesterday']
 const leaked = banned.filter((b) => allText.some((tx) => tx === b))
 console.log(leaked.length === 0 ? 'OK   无已移除的标签' : `FAIL 仍残留标签: ${leaked.join(', ')}`)
 
 // ── 折叠态 ───────────────────────────────────────────────────────────
 //
-// 折叠态是 99% 时间被看到的那一屏。PR1 只有 CSS 参与（`.is-collapsed` 隐藏
-// 进度条），所以这里断言**类名与结构**，而不是计算样式（测试替身不跑布局）。
-// 真正「折叠态该显示什么」的自适应逻辑在 PR2。
+// 折叠态是 99% 时间被看到的那一屏，由 CSS 的 `.is-collapsed` 控制显隐；
+// 测试替身不跑布局，所以这里断言**类名、结构、以及 CSS 规则的存在性**。
 const btn = (function findBtn(n) {
   if (String(n.className ?? '').includes('dsh-tu-pet-btn')) return n
   for (const c of n.children ?? []) { const r = findBtn(c); if (r !== undefined) return r }
@@ -137,16 +145,30 @@ const stillHasPool = (function has(n) {
 })(root)
 console.log(stillHasPool ? 'OK   池仍在 DOM（由 CSS 控制显隐）' : 'FAIL 池被误删')
 
-// CSS 必须为折叠态定义「保留池、隐藏进度条」。
+// CSS 必须为折叠态定义「隐藏进度条与附加读数、保留池」。
+//
+// ⚠️ 这里曾经是「验证器骗过自己」的典型：`poolHidden` 写成
+// `/.is-collapsed[^{]*\{[^}]*\}\s*$/m.test('')`——对**空字符串**跑正则，
+// 恒为 false，于是那行**无条件**打印 OK；而 `poolVisibleRe` 算出来根本没用。
+// 也就是说这两条断言从来没验过任何东西（NOTES 里「验证器骗过自己」的同款）。
+//
+// 现在的写法是真正去 CSS 文本里找：
+// - 折叠态**必须**隐藏 `.dsh-tu-pet-charge`（进度条）与 `.dsh-tu-pet-meta`（附加读数）；
+// - 折叠态**不得**隐藏 `.dsh-tu-pet-pool`（池是常驻形态唯一的成就读数）。
 const cssText = source
-const hideChargeRe = /\.is-collapsed\s+\.dsh-tu-pet-charge[^{]*\{[^}]*display:\s*none/
-console.log(hideChargeRe.test(cssText) ? 'OK   折叠态隐藏进度条' : 'FAIL 折叠态未隐藏进度条')
-const poolVisibleRe = /\.is-collapsed\s+\.dsh-tu-pet-pool/
-const poolHidden = /\.is-collapsed[^{]*\{[^}]*\}\s*$/m.test('')
-console.log(!poolHidden ? 'OK   折叠态未隐藏池' : 'FAIL 折叠态隐藏了池')
+function collapsedHides(selector) {
+  const re = new RegExp(`\\.is-collapsed[^{]*\\.${selector}[^{]*\\{[^}]*display:\\s*none`)
+  return re.test(cssText)
+}
+const hidesCharge = collapsedHides('dsh-tu-pet-charge')
+const hidesMeta = collapsedHides('dsh-tu-pet-meta')
+const hidesPool = collapsedHides('dsh-tu-pet-pool')
+console.log(hidesCharge ? 'OK   折叠态隐藏进度条' : 'FAIL 折叠态未隐藏进度条')
+console.log(hidesMeta ? 'OK   折叠态隐藏附加读数' : 'FAIL 折叠态未隐藏附加读数')
+console.log(!hidesPool ? 'OK   折叠态未隐藏池' : 'FAIL 折叠态隐藏了池')
 
 const ok = order === expected && leaked.length === 0 && isCollapsed && btnLabel === '+'
-  && stillHasPool && hideChargeRe.test(cssText)
+  && stillHasPool && hidesCharge && hidesMeta && !hidesPool
 
 // ── 带真实形状数据的完整渲染 ─────────────────────────────────────────
 //

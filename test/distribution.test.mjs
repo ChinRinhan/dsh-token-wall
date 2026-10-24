@@ -263,6 +263,32 @@ check('副标题不是「缺失就返回 null」',
 check('副标题用空串兜底（desc.sub ?? \'\'）',
   /desc\.sub\s*\?\?\s*''/.test(source))
 
+// ── 分布请求必须带上统计口径参数 ───────────────────────────────────────
+//
+// 这条锁的是一个「修一半」的 bug：host 侧已经让 `/workspaces` 走运行时口径了
+// （`wantsSub` / `wantsAux`），但**客户端从没把 `includeSub` / `includeAux`
+// 传下来**。于是设置页关掉「含子会话」后：累计（`/today`）变小，而旁边的
+// 工作区分布纹丝不动——同一块界面两个矛盾的数字。
+//
+// host 的单测当时全绿，因为它们只验端点自身；端到端仍然是错的。
+// 所以这里断言的是**客户端源码里 distQuery 复用了 todayQuery**：
+// 只要有人再单独拼一份没有口径的 URL，这条就会红。
+console.log('\n=== 分布请求的口径参数 ===')
+/** 取出「构造分布 URL」那段源码（从 fromKey 到 useJson 之前）。 */
+const distQueryBlock = (() => {
+  const at = source.indexOf('const fromKey')
+  if (at < 0) return ''
+  const end = source.indexOf('useJson', at)
+  return end < 0 ? source.slice(at, at + 1200) : source.slice(at, end)
+})()
+check('能找到 distQuery 构造块', distQueryBlock !== '', '源码结构变了？')
+check('distQuery 复用 todayQuery（口径只有一处来源）',
+  /todayQuery\(/.test(distQueryBlock),
+  '分布请求必须复用 todayQuery()，否则口径会分叉')
+check('distQuery 不再手拼没有口径的 URL',
+  !/`\$\{ROUTE_PREFIX\}\/workspaces\?limit=12&from=\$\{fromKey\}&to=\$\{toKey\}`\s*$/m.test(distQueryBlock),
+  '旧的裸 URL 不能回来')
+
 console.log(`\n结果: ${failures.length === 0 ? '全部通过 ✓' : `${failures.length} 处失败 ✗`}`)
 for (const f of failures) console.log('  ' + f)
 process.exitCode = failures.length === 0 ? 0 : 1

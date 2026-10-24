@@ -98,6 +98,46 @@ function boot(options = {}) {
   return { call, emit, dispose }
 }
 
+/**
+ * 造一个**形状与宿主真实租约一致**的 SessionObservation。
+ *
+ * ## ⚠️ 为什么不能省事地给个 `.dispose()`
+ *
+ * 宿主真实的 `SessionObservation` 是 `extends Disposable`，租约对象上只有
+ * **`[Symbol.dispose]()`** 和 `retain()`，**没有 `.dispose()`**（见
+ * `sessionQuery` 的 `live()` / `read()` 返回的字面量）。
+ *
+ * 这个测试最早就是自己造了一个 `.dispose()`。于是实现里的
+ * `observation?.dispose?.()`（一个静默空操作）把测试骗过去了 ——
+ * **实现与验证器共享同一个错误前提**，正是 NOTES 里「验证器骗过自己」的同款。
+ *
+ * 所以这里刻意只提供 `[Symbol.dispose]`，并且**故意不提供 `.dispose()`**：
+ * 哪天有人把实现写回 `.dispose?.()`，这个测试会立刻红。
+ *
+ * @param options.projections 观察结果里的投影快照（可选）。
+ * @param options.events      观察结果里的事件序列（可选，用于播种路径）。
+ * @param options.onDispose   释放时回调，用于断言「租约真的被释放了」。
+ */
+function createLease(options = {}) {
+  let disposed = false
+  const lease = {
+    source: 'prepared',
+    header: { cwd: 'F:/ws' },
+    inheritedEventCount: 0,
+    events: options.events ?? [],
+    cursor: -1,
+    retain: () => lease,
+    [Symbol.dispose]: () => {
+      disposed = true
+      options.onDispose?.()
+    },
+  }
+  if (options.projections !== undefined) lease.projections = options.projections
+  // 供断言使用：租约是否已被释放。
+  lease.__isDisposed = () => disposed
+  return lease
+}
+
 /** 造一条 assistant/message。 */
 function message({ turn = 1, step = 1, input = 100, output = 10 }) {
   return {
@@ -181,7 +221,7 @@ test('活会话存在但投影里没有 tokenUsage 时，继续尝试冷路径',
       sessionQuery: {
         observeSession: async () => {
           observed += 1
-          return {
+          return createLease({
             projections: {
               values: {
                 tokenUsage: {
@@ -189,8 +229,7 @@ test('活会话存在但投影里没有 tokenUsage 时，继续尝试冷路径',
                 },
               },
             },
-            dispose() {},
-          }
+          })
         },
       },
     },
@@ -206,8 +245,10 @@ test('活会话存在但投影里没有 tokenUsage 时，继续尝试冷路径',
 
 // ── ② 冷会话：走 sessionQuery.observeSession ──────────────────────────
 
-test('冷会话（sessions.get 未命中）走 observeSession，并释放租约', async () => {
+test('冷会话（sessions.get 未命中）走 observeSession，并按 [Symbol.dispose] 释放租约', async () => {
   let disposed = 0
+  /** 抓住这次返回的租约，事后断言它真的被释放了。 */
+  let lease
   const { call, dispose } = boot({
     services: {
       // 没有任何活会话
@@ -217,7 +258,7 @@ test('冷会话（sessions.get 未命中）走 observeSession，并释放租约'
         observeSession: async (id, opts) => {
           assert.equal(id, 'sess-cold')
           assert.equal(opts?.projectionMode, 'all', '必须要求投影，否则读不到 tokenUsage')
-          return {
+          lease = createLease({
             projections: {
               values: {
                 tokenUsage: {
@@ -226,8 +267,9 @@ test('冷会话（sessions.get 未命中）走 observeSession，并释放租约'
                 contextPressure: { contextWindow: 1000000, pressureTokens: 500 },
               },
             },
-            dispose() { disposed += 1 },
-          }
+            onDispose: () => { disposed += 1 },
+          })
+          return lease
         },
       },
     },
@@ -236,6 +278,51 @@ test('冷会话（sessions.get 未命中）走 observeSession，并释放租约'
     const body = await call('/dsh-token-usage/today', '?session=sess-cold')
     assert.equal(body.session.projected.tokenUsage.uncachedInputTokens, 42)
     assert.equal(disposed, 1, 'SessionObservation 是租约，必须释放')
+    // ⚠️ 关键断言：释放必须走 `[Symbol.dispose]`。
+    //
+    // 这条曾经不存在，于是实现里的 `observation?.dispose?.()`（真实租约上
+    // **没有**这个方法）是静默空操作——refs 不递减、条目永不被淘汰，而桌宠每秒
+    // 轮询一次。测试当时是绿的，因为 mock 自己造了 `.dispose()`。
+    assert.equal(lease.__isDisposed?.(), true, '租约必须通过 [Symbol.dispose] 释放')
+    assert.equal(typeof lease.dispose, 'undefined',
+      '真实租约没有 .dispose()；mock 也不该提供，否则会掩盖空操作 bug')
+  } finally {
+    dispose()
+  }
+})
+
+test('冷读会用同一份 events 播种逐轮状态（重启后「本轮/上一轮」立刻有值）', async () => {
+  const { call, dispose } = boot({
+    services: {
+      sessions: { get: () => undefined },
+      sessionProjections: { snapshot: () => ({ asOfSeq: 0, values: {} }) },
+      sessionQuery: {
+        observeSession: async () => createLease({
+          projections: {
+            values: {
+              tokenUsage: {
+                uncachedInputTokens: 300, outputTokens: 30, cacheReadTokens: 0, cacheWriteTokens: 0,
+              },
+            },
+          },
+          // 一份「两轮」的最小日志：第 1 轮 100、第 2 轮 230。
+          events: [
+            { type: 'turn/start', seq: 0, data: { turn: 1 } },
+            message({ turn: 1, step: 1, input: 100, output: 0 }),
+            { type: 'turn/start', seq: 2, data: { turn: 2 } },
+            message({ turn: 2, step: 1, input: 200, output: 30 }),
+          ],
+        }),
+      },
+    },
+  })
+  try {
+    const body = await call('/dsh-token-usage/today', '?session=sess-seeded')
+    // `live` 现在应当已经由 events 播种出来（而不是 null）。
+    assert.notEqual(body.session.live, null, '冷读必须播种 live，否则重启后本轮永远空着')
+    assert.equal(body.session.live.sessionTokens, 330, '播种后会话累计 = 100 + 230')
+    assert.equal(body.session.live.turnTokens, 230, '本轮 = 第 2 轮')
+    assert.equal(body.session.live.previousTurnTokens, 100, '上一轮 = 第 1 轮')
   } finally {
     dispose()
   }

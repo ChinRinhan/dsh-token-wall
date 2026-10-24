@@ -112,10 +112,12 @@ window.__ModuleLoader__.load({
       // ── 会话读数（桌宠）──
       sessionLabel: '本会话',
       turnLabel: '本轮',
+      prevTurnLabel: '上一轮',
       contextLabel: '上下文',
       contextUnavailable: '上下文占用暂不可用',
       contextCollapsedHint: '上下文接近上限，快会被压缩',
       cacheHitLabel: '缓存',
+      cacheUnavailable: '缓存命中率暂不可用',
       navWall: 'Token 方块墙',
       kindChat: '对话调用',
       kindAux: '辅助调用（压缩等）',
@@ -217,10 +219,12 @@ window.__ModuleLoader__.load({
       // ── Session readouts (pet) ──
       sessionLabel: 'This session',
       turnLabel: 'This turn',
+      prevTurnLabel: 'previous turn',
       contextLabel: 'Context',
       contextUnavailable: 'Context usage unavailable',
       contextCollapsedHint: 'Context nearly full — compaction is close',
       cacheHitLabel: 'cache',
+      cacheUnavailable: 'Cache hit rate unavailable',
       navWall: 'Token Block Wall',
       kindChat: 'Chat calls',
       kindAux: 'Auxiliary calls (compaction etc.)',
@@ -281,6 +285,48 @@ window.__ModuleLoader__.load({
       if (abs >= 1e6) return `${(v / 1e6).toFixed(2)}M`
       if (abs >= 1e3) return `${(v / 1e3).toFixed(1)}K`
       return String(Math.trunc(v))
+    }
+
+    /**
+     * 有限数，否则 `undefined`。
+     *
+     * ## 为什么需要它
+     *
+     * `compact()` 里的 `Number(n) || 0` 会把 `NaN` 吃成 `0`——对一般读数这是
+     * 无害兜底，但对**会话用量**是灾难：宿主投影一旦改名或换形状（例如
+     * `uncachedInputTokens` 变成别的拼写），`NaN` 会被渲染成 `0`，用户看到
+     * 「本会话 0」而不是「读不到」。
+     *
+     * DESIGN 反复强调过：「读不到」与「花了 0」是两件完全不同的事。所以凡是
+     * 进入会话读数的数字，都先过这一层——拿不到就是 `undefined`，由调用方画 `—`。
+     */
+    function finiteOrUndefined(value) {
+      const n = Number(value)
+      return Number.isFinite(n) ? n : undefined
+    }
+
+    /**
+     * 宿主 `tokenUsage` 投影的四桶求和；任一桶不是有限数就返回 `undefined`。
+     *
+     * ⚠️ 四个桶是**必填**的（宿主的 `wireSchema` 要求全部存在）。少一个就说明
+     * 契约变了，此时宁可显示 `—` 也不能把剩下三个加起来冒充总额。
+     *
+     * ⚠️ 这里的算术与 `lib/turns.js` 的 `totalOf` 是同一份口径的第两份实现
+     * （客户端 bundle 不能 import lib）。`test/blocks-cross.test.mjs` 的同款思路
+     * 在 `distribution.test.mjs` 里有交叉断言——改这里要一起改。
+     */
+    const PROJECTION_BUCKETS = [
+      'uncachedInputTokens', 'outputTokens', 'cacheReadTokens', 'cacheWriteTokens',
+    ]
+    function sumProjectionBuckets(usage) {
+      if (usage === null || typeof usage !== 'object') return undefined
+      let total = 0
+      for (const key of PROJECTION_BUCKETS) {
+        const n = finiteOrUndefined(usage[key])
+        if (n === undefined) return undefined
+        total += n
+      }
+      return total
     }
 
     /** 带千分位的整数：用于表格单元格。 */
@@ -2083,12 +2129,21 @@ window.__ModuleLoader__.load({
       // - 模型 / 厂商：用 /summary（归并逻辑在 host 侧，需要 modelAliases）
       //
       // 轮询比 /today 慢（10 秒）：这是「哪花得多」的分布，不是秒级心跳。
+      //
+      // ⚠️ **必须带上口径参数**（`includeSub` / `includeAux`）。
+      //
+      // 这条曾经漏掉：host 侧修好了「/workspaces 要走运行时 prefs」，但客户端
+      // 根本没把这两个参数传下来，于是端到端仍然不一致——设置页关掉「含子会话」
+      // 后，累计（/today）变小、而旁边的分布纹丝不动。**修一半比不修更难发现**，
+      // 因为 host 的测试全绿。所以这里复用 `todayQuery()`，让三个端点只有一处
+      // 口径来源。
       const fromKey = scope === 'today' ? localDayKey(Date.now()) : '2000-01-01'
       const toKey = scope === 'today' ? localDayKey(Date.now()) : '2099-12-31'
+      const distScope = todayQuery(prefs).slice(1) // 去掉前导 `?`，便于继续拼
       const distQuery = distDim === 'workspace'
-        ? `${ROUTE_PREFIX}/workspaces?limit=12&from=${fromKey}&to=${toKey}`
+        ? `${ROUTE_PREFIX}/workspaces?limit=12&from=${fromKey}&to=${toKey}&${distScope}`
         : `${ROUTE_PREFIX}/summary?groupBy=${distDim === 'model' ? 'modelNorm' : 'vendor'}`
-          + `&from=${fromKey}&to=${toKey}`
+          + `&from=${fromKey}&to=${toKey}&${distScope}`
       const { data: distData } = useJson(distQuery, { pollMs: 10000 })
       const distRows = distData?.rows
 
@@ -2511,10 +2566,21 @@ window.__ModuleLoader__.load({
         const pressure = projected?.contextPressure
 
         // 本会话用量：优先宿主投影（权威、含整份日志），退到我们自己折的。
-        const sessionTokens = tokenUsage === undefined || tokenUsage === null
-          ? (live === undefined || live === null ? undefined : Number(live.sessionTokens) || 0)
-          : Number(tokenUsage.uncachedInputTokens) + Number(tokenUsage.outputTokens)
-            + Number(tokenUsage.cacheReadTokens) + Number(tokenUsage.cacheWriteTokens)
+        //
+        // ⚠️ 两条路都必须过 `finiteOrUndefined` / `sumProjectionBuckets`。
+        // 早先写的是 `Number(live.sessionTokens) || 0`，而 `compact()` 内部还有
+        // 一层 `Number(n) || 0`——宿主字段一改名，NaN 就会一路变成「0」，
+        // 于是「读不到」被画成「没花过」。这是 DESIGN 明令禁止的失效形态。
+        //
+        // ⚠️ 退到 `live` 时还多一个条件：**必须 > 0**。
+        // 因为 `live` 是「插件启动以来」的累计，只要收到过任何一条事件就会存在
+        // （哪怕是 `turn/start`，此时用量是 0）。若 `projected` 恰好不可用
+        // （比如服务不在组合里），直接画 `live` 的 0 会让人以为「这个会话没花钱」，
+        // 而实际上我们只是不知道它的历史总量。宁可画 `—`。
+        const projectedTotal = sumProjectionBuckets(tokenUsage)
+        const liveTotal = live === undefined || live === null ? undefined : finiteOrUndefined(live.sessionTokens)
+        const sessionTokens = projectedTotal
+          ?? (liveTotal !== undefined && liveTotal > 0 ? liveTotal : undefined)
 
         totalValue.textContent = sessionTokens === undefined ? '—' : compact(sessionTokens)
         totalLabel.textContent = t('sessionLabel')
@@ -2552,11 +2618,22 @@ window.__ModuleLoader__.load({
         pool.title = `${wall.filled} × ${compact(BLOCK_UNIT)} = ${compact(totalTokens)}`
 
         // 本轮用量：和「本会话」是同一个数在涨，做成池那一行的后缀。
-        const turnTokens = live === undefined || live === null ? undefined : Number(live.turnTokens)
+        //
+        // 「上一轮」也在这里，但只进 tooltip 而不占一行：
+        // 它的作用是给「本轮这个数算大还是算小」一个参照，是**按需**信息；
+        // 常显会把这个已经住了四个读数的小面板挤爆。
+        const turnTokens = live === undefined || live === null ? undefined : finiteOrUndefined(live.turnTokens)
+        const prevTurnTokens = live === undefined || live === null
+          ? undefined
+          : finiteOrUndefined(live.previousTurnTokens)
         if (turnTokens === undefined) {
           turnLabel.textContent = ''
+          turnLabel.title = ''
         } else {
           turnLabel.textContent = `· ${t('turnLabel')} ${compact(turnTokens)}`
+          turnLabel.title = prevTurnTokens === undefined
+            ? `${t('turnLabel')} ${compact(turnTokens)}`
+            : `${t('turnLabel')} ${compact(turnTokens)} · ${t('prevTurnLabel')} ${compact(prevTurnTokens)}`
         }
 
         // ── 附加读数 ────────────────────────────────────────────────────
@@ -2566,23 +2643,31 @@ window.__ModuleLoader__.load({
         //
         // ⚠️ 不能把 outputTokens 放进分母：命中率是**输入侧**的概念，
         // 混进输出会让它随回复长度漂移，失去「这家的缓存好不好用」的含义。
-        const billedInput = tokenUsage === undefined || tokenUsage === null
+        //
+        // ⚠️ 三个桶同样要过 `finiteOrUndefined`：字段改名时宁可画 `—`。
+        const uncachedInput = finiteOrUndefined(tokenUsage?.uncachedInputTokens)
+        const cacheRead = finiteOrUndefined(tokenUsage?.cacheReadTokens)
+        const cacheWrite = finiteOrUndefined(tokenUsage?.cacheWriteTokens)
+        const billedInput = uncachedInput === undefined || cacheRead === undefined
+          || cacheWrite === undefined
           ? undefined
-          : Number(tokenUsage.uncachedInputTokens) + Number(tokenUsage.cacheReadTokens)
-            + Number(tokenUsage.cacheWriteTokens)
-        const cacheHit = billedInput !== undefined && Number.isFinite(billedInput) && billedInput > 0
-          ? (Number(tokenUsage.cacheReadTokens) / billedInput) * 100
+          : uncachedInput + cacheRead + cacheWrite
+        const cacheHit = billedInput !== undefined && billedInput > 0
+          ? (cacheRead / billedInput) * 100
           : undefined
         cacheValue.textContent = cacheHit === undefined ? '—' : `${cacheHit.toFixed(1)}%`
         cacheItem.title = cacheHit === undefined
-          ? t('contextUnavailable')
-          : `${t('cacheHitLabel')} ${compact(Number(tokenUsage.cacheReadTokens))} / ${compact(billedInput)}`
+          ? t('cacheUnavailable')
+          : `${t('cacheHitLabel')} ${compact(cacheRead)} / ${compact(billedInput)}`
 
         // 今日量：`/today` 本来就下发，桌宠不下发是白丢。
-        const todayTokens = Number(data?.totals?.totalTokens)
-        todayValue.textContent = Number.isFinite(todayTokens) && todayTokens > 0
-          ? compact(todayTokens)
-          : '—'
+        //
+        // ⚠️ 这里要区分「读不到」与「真的是 0」：
+        // - `totals.totalTokens` 缺失或不是有限数 → `—`（读不到）；
+        // - 它是 0 → 显示 `0`（今天确实还没花）——早先写成 `> 0 ? … : '—'`，
+        //   把一个合法的 0 画成了「不可用」，是反向的混淆。
+        const todayTokens = finiteOrUndefined(data?.totals?.totalTokens)
+        todayValue.textContent = todayTokens === undefined ? '—' : compact(todayTokens)
 
         // 上下文占用：**不再是进度条**，而是这里的一个百分比读数。
         //
@@ -2807,7 +2892,7 @@ window.__ModuleLoader__.load({
      * 「UI 里选中了哪个会话」是纯客户端状态。
      *
      * 唯一可靠的来源是一个 **session-scope 的 slot 组件**——它拿得到 `sessionId`
-     * prop。所以那个组件只做一件事：把 id 写进这个 store。桌宠订阅它，轮询时
+     * prop。所以那个组件只做一件事：把 id 写进这个 store。桌宠每拍轮询时读它，
      * 把 id 作为 `?session=` 传给 host，由 host 去查真实数据。
      *
      * ## 为什么只传 id，不传数字
@@ -2815,6 +2900,14 @@ window.__ModuleLoader__.load({
      * 数字统一由 host 出。若桥也传数字，就会出现两个来源（浏览器折的 vs host 折的），
      * 而它们迟早不一致——正是 DESIGN.md 里警告过的那类「同一件事两个读数」。
      * 传一个字符串则不可能漂移。
+     *
+     * ## 为什么没有订阅机制
+     *
+     * 一开始写了 `subscribe` / `updatedAt` / `FOCUS_STALE_MS`，想「桥一变就让桌宠
+     * 立刻重绘」以及「桥卸载后标注陈旧」。实现完发现两样都没人用：桌宠是 1 秒一次的
+     * 轮询，本来就会读到最新值；而「陈旧」也没有对应的 UI。留着就是一整套没有调用
+     * 方的 API——比没有更糟，因为它暗示存在一套不存在的机制。于是删掉，只留 `set` 与
+     * `value`。真需要即时性时再加，那时会有真正的调用方。
      *
      * ## ⚠️ 桥必须**不受开关控制**
      *
@@ -2827,40 +2920,10 @@ window.__ModuleLoader__.load({
     const focusStore = {
       /** 当前会话 id；`undefined` = 还没收到（或桥未挂载）。 */
       value: undefined,
-      /** 上次更新时间：桥卸载后 value 会变陈旧，用它判断是否还可信。 */
-      updatedAt: 0,
-      listeners: new Set(),
       set(sessionId) {
-        const next = typeof sessionId === 'string' && sessionId !== '' ? sessionId : undefined
-        if (next === this.value) {
-          // 同一个 id 也要刷新时间戳：说明桥还活着，值仍可信。
-          this.updatedAt = Date.now()
-          return
-        }
-        this.value = next
-        this.updatedAt = Date.now()
-        for (const fn of this.listeners) {
-          try {
-            fn(this.value)
-          } catch {
-            // 单个订阅者出错不该影响其他订阅者。
-          }
-        }
-      },
-      subscribe(fn) {
-        this.listeners.add(fn)
-        return () => this.listeners.delete(fn)
+        this.value = typeof sessionId === 'string' && sessionId !== '' ? sessionId : undefined
       },
     }
-
-    /**
-     * 陈旧的阈值：桥在正常使用中每渲染一次都会刷新时间戳。
-     *
-     * 超过这个时长没有任何刷新，说明桥所在的 slot 已经不在树上（用户切到了
-     * 方块墙面板或设置页），此时这个 id **可能不是用户正看着的那个会话**，
-     * 但仍是我们知道的最好信息——所以照用，只是 UI 上要标注是回退值。
-     */
-    const FOCUS_STALE_MS = 15_000
 
     const locale = {
       t: (key) => DICT_ZH[key] ?? key,

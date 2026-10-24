@@ -210,7 +210,13 @@ const WITH_SESSION = {
   ...TODAY,
   session: {
     id: 'sess-demo',
-    live: { sessionTokens: 2_130_000, turnTokens: 41_000, turn: 3, steps: 5 },
+    live: {
+      sessionTokens: 2_130_000,
+      turnTokens: 41_000,
+      previousTurnTokens: 55_000,
+      turn: 3,
+      steps: 5,
+    },
     projected: {
       tokenUsage: {
         uncachedInputTokens: 2_130_000, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0,
@@ -246,6 +252,59 @@ check('有会话数据：池仍显示全时 58 块（不跟随会话）',
 // 断言它**渲染了数字**（而不是 `—`），因为这是「输入侧」指标算得出来的情况。
 check('有会话数据：缓存命中率渲染为百分比', /缓存\s*0\.0%/.test(joined2), joined2.slice(0, 200))
 check('有会话数据：今日量渲染', /今日\s*142\.59M/.test(joined2), joined2.slice(0, 200))
+
+// 「上一轮」只进 tooltip：它是「本轮这个数算大还是算小」的参照，属于按需信息。
+// 这条断言存在的理由：`previousTurnTokens` 曾经被 host 算出来、却**从没被前端
+// 渲染过**——一个字段在链路上走完了全程却没有人用，是最难靠读代码发现的那类缺口。
+const turnNode = (function findTurn(n) {
+  if (String(n.className ?? '').includes('dsh-tu-pet-stat-dim')) return n
+  for (const c of n.children ?? []) { const r = findTurn(c); if (r !== undefined) return r }
+  return undefined
+})(pet2)
+check('本轮节点存在', turnNode !== undefined)
+check('本轮 tooltip 含上一轮', typeof turnNode?.title === 'string'
+  && turnNode.title.includes('上一轮') && turnNode.title.includes('55.0K'),
+  JSON.stringify(turnNode?.title))
+check('本轮文字本身不常显上一轮（不挤占版面）',
+  !String(turnNode?._text ?? '').includes('上一轮'), String(turnNode?._text))
+
+// ── 零值语义：两个方向都要对 ──────────────────────────────────────────
+//
+// 「读不到」与「真的是 0」必须分开。这里各验一次，因为两种写法很容易互相写反：
+//
+// 1. **今日 = 0 是合法的**（今天还没花）：必须显示 `0`，不是 `—`。
+//    早先写成 `> 0 ? compact : '—'`，把一个合法的 0 画成了「不可用」。
+// 2. **只有 live 的 0 不算数**：`live` 是「插件启动以来」的累计，只要收到过一条
+//    事件就存在（哪怕只有 `turn/start`，用量是 0）。若 `projected` 不可用，
+//    直接画这个 0 会让人以为「这个会话没花钱」，而我们其实只是不知道历史总量。
+console.log('\n=== 零值语义 ===')
+const ZERO_TODAY = {
+  ...TODAY,
+  totals: { totalTokens: 0 }, // 今天确实还没花
+  session: {
+    id: 'sess-zero',
+    live: { sessionTokens: 0, turnTokens: 0, turn: 1, steps: 0 }, // 有状态但还没用量
+    projected: null, // 宿主投影不可用
+    projectedUnavailable: 'no-session-query',
+  },
+}
+globalThis.fetch = async () => ({ ok: true, status: 200, json: async () => ZERO_TODAY })
+const before3 = new Set(env.body.children)
+instance.apply(ctx)
+const pet3 = env.body.children.find((c) => !before3.has(c))
+for (let i = 0; i < 16; i += 1) await Promise.resolve()
+await new Promise((r) => setTimeout(r, 0))
+await new Promise((r) => setTimeout(r, 0))
+const text3 = []
+;(function collect(n) {
+  if (n._text !== undefined && n._text !== '') text3.push(String(n._text))
+  for (const c of n.children ?? []) collect(c)
+})(pet3)
+const joined3 = text3.join('')
+console.log(`  文本: ${JSON.stringify(text3)}`)
+check('今日真为 0 时显示 0（不是 —）', /今日\s*0\b/.test(joined3), joined3.slice(0, 200))
+check('projected 不可用时不把 live 的 0 当成本会话用量',
+  !/本会话\s*0\b/.test(joined3), joined3.slice(0, 200))
 
 console.log(`\n结果: ${failures.length === 0 ? '全部通过 ✓' : `${failures.length} 处失败 ✗`}`)
 for (const f of failures) console.log('  ' + f)

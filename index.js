@@ -31,7 +31,7 @@ import { backfill, entryFromLiveEvent } from './lib/collect.js'
 import { probePersistence } from './lib/adapter.js'
 import { aggregateRange, diffDays, localDayKey, shiftDayKey } from './lib/fold.js'
 import { groupModels, groupVendors } from './lib/models.js'
-import { emptyTurnState, foldTurnEvent, sessionViewOf } from './lib/turns.js'
+import { emptyTurnState, foldTurnEvent, foldTurnEvents, sessionViewOf } from './lib/turns.js'
 
 export const name = 'dsh-token-usage'
 
@@ -263,8 +263,50 @@ export function apply(ctx, rawConfig) {
         const oldest = turnStates.keys().next().value
         turnStates.delete(oldest)
       }
+    } else {
+      // ⚠️ 命中也要重排：注释里说这是「LRU 近似」，而只 `set` 新 key 实际是 FIFO
+      // ——一个长期活跃的会话会被 64 个后来的会话挤掉，然后它的「本轮」突然归零。
+      // Map 保序，删了再插就挪到末尾。
+      turnStates.delete(id)
+      turnStates.set(id, state)
     }
     return state
+  }
+
+  /**
+   * 用一段**完整事件序列**给某个会话播种逐轮状态（冷读路径用）。
+   *
+   * ## 为什么需要
+   *
+   * `live` 只在插件启动后收到的事件上累积。重启后去看一个旧会话时，`live` 是空的
+   * ——于是「本轮 / 上一轮」显示不出来，而 `projected` 那边明明已经为了取投影把
+   * 整份日志读出来了。既然 events 已经在手上，顺手折一遍就能把它们填上。
+   *
+   * ## 两条纪律
+   *
+   * 1. **只在没有状态时播种**：已经有状态说明实时路径更新得更准（它包含播种之后
+   *    的新事件），重复折不仅浪费 CPU（桌宠每秒轮询），还会把新值覆盖成旧值。
+   * 2. **播种值就是「这个会话的完整读数」**：它来自整份日志，和后端的 `live`
+   *    接口语义一致（都是「该会话累计」），所以前端不需要区分来源。
+   */
+  function seedTurnsFromEvents(sessionId, events) {
+    const id = String(sessionId ?? '')
+    if (id === '' || !Array.isArray(events) || events.length === 0) return
+    if (turnStates.has(id)) return
+    try {
+      const seeded = foldTurnEvents(events)
+      // 折出来一条带用量的消息都没有，就不必占位——否则前端会显示「本轮 0」
+      // 而不是「—」，而这两者含义不同（见 client 里的 finiteOrUndefined 注释）。
+      if (seeded.turnSamples === 0) return
+      turnStates.set(id, seeded)
+      while (turnStates.size > MAX_TURN_SESSIONS) {
+        const oldest = turnStates.keys().next().value
+        turnStates.delete(oldest)
+      }
+    } catch (error) {
+      // 播种失败不影响读数：live 会在下一条实时事件上从零开始。
+      logger.warn?.(`[token-usage] 冷读播种逐轮状态失败（已忽略）: ${String(error)}`)
+    }
   }
 
   ctx.on('session/event', (session, event) => {
@@ -332,6 +374,42 @@ export function apply(ctx, rawConfig) {
     const wantsAux = (query) => config.includeAuxiliary && query?.get('includeAux') !== '0'
 
     /**
+     * 释放 `sessionQuery.observeSession()` 返回的**租约**。
+     *
+     * ## ⚠️ 这里曾经写错，而单测是假绿的
+     *
+     * 最初的实现是 `observation?.dispose?.()`。宿主真实的 `SessionObservation`
+     * 是 `extends Disposable`，租约对象上只有 **`[Symbol.dispose]()`** 和
+     * `retain()`，**没有 `.dispose()` 方法**（见 `sessionQuery` 的 `live()` /
+     * `read()` 返回的字面量）。于是那句 `?.()` 是**静默空操作**：
+     *
+     * - `entry.refs` 永不递减 → `evictPastCapacity()` 永不触发 → 冷读过的会话
+     *   条目被永久钉在内存里；
+     * - 而桌宠**每秒**轮询一次，每轮都可能走到冷读路径。
+     *
+     * 更糟的是单测把这个 bug 盖住了：`test/host.session.test.mjs` 里的 mock
+     * 自己造了一个 `.dispose()`——**实现与验证器共享同一个错误前提**，
+     * 正是 NOTES 里「验证器骗过自己」的同款。现在 mock 已改成真实形状
+     * （`[Symbol.dispose]`），这条路径才算真的被验过。
+     *
+     * 两种协议都试：`[Symbol.dispose]` 是规范路径，`.dispose()` 作为兼容兜底
+     * （万一将来宿主换成另一代接口）。
+     */
+    function releaseObservation(observation) {
+      if (observation === null || typeof observation !== 'object') return
+      try {
+        const dispose = observation[Symbol.dispose]
+        if (typeof dispose === 'function') {
+          dispose.call(observation)
+          return
+        }
+        if (typeof observation.dispose === 'function') observation.dispose()
+      } catch {
+        // 释放失败不该影响读数：租约最多多留一会儿，读数是对的。
+      }
+    }
+
+    /**
      * 读宿主对某个会话的**精确**投影（`tokenUsage` / `contextPressure`）。
      *
      * ## 为什么要分三级降级
@@ -388,11 +466,14 @@ export function apply(ctx, rawConfig) {
         const observation = await query.observeSession(id, { projectionMode: 'all' })
         try {
           const hit = pick(observation?.projections)
-          if (hit !== undefined) return { available: true, ...hit }
+          if (hit !== undefined) {
+            // 顺手用**同一份** events 把逐轮状态播种下去（见 releaseObservation 的注释）。
+            seedTurnsFromEvents(id, observation?.events)
+            return { available: true, ...hit }
+          }
           return { available: false, reason: 'no-token-usage' }
         } finally {
-          // SessionObservation 是租约，必须释放，否则会留住会话日志句柄。
-          try { observation?.dispose?.() } catch { /* 已释放 */ }
+          releaseObservation(observation)
         }
       } catch (error) {
         return { available: false, reason: `query-failed: ${String(error?.message ?? error)}` }
@@ -592,8 +673,14 @@ export function apply(ctx, rawConfig) {
       const sessionParam = typeof query?.get === 'function' ? query.get('session') : undefined
       let session
       if (typeof sessionParam === 'string' && sessionParam !== '') {
-        const live = turnStates.get(sessionParam)
+        // ⚠️ 顺序：先 `await sessionUsageOf()` 再读 `turnStates`。
+        //
+        // 冷读路径会用同一份 events 给 `turnStates` **播种**（见
+        // `seedTurnsFromEvents`）。早先这里先取 `live` 再 await，于是播种结果
+        // 要等到下一秒轮询才体现——「重启后立刻能看到本轮」这个目的落空了，
+        // 而且测试里那次调用返回的是 `live: null`。
         const projected = await sessionUsageOf(sessionParam)
+        const live = turnStates.get(sessionParam)
         const turnView = live === undefined ? undefined : sessionViewOf(live)
         session = {
           id: sessionParam,
@@ -662,7 +749,10 @@ export function apply(ctx, rawConfig) {
           sessionsTracked: store.watermarks?.size ?? 0,
         },
         // 仅当请求带 `session` 参数时出现（老客户端行为不变）。
-        ...session === undefined ? {} : { session },
+        //
+        // ⚠️ 括号是必要的可读性：裸写 `...session === undefined ? {} : { session }`
+        // 靠运算符优先级也能跑，但读起来像在展开一个布尔比较。
+        ...(session === undefined ? {} : { session }),
       }
     }
 
@@ -693,15 +783,19 @@ export function apply(ctx, rawConfig) {
         : 5
       // ⚠️ 必须走 `wantsSub` / `wantsAux`，**不能**直接读 `config.*`。
       //
-      // 这里曾经读的是部署期 `config.includeSubagents` / `config.includeAuxiliary`，
-      // 而 `/today` 与 `/summary` 走的是运行时 prefs。后果是：用户在设置页关掉
-      // 「含子会话」后，方块墙/桌宠的累计（读 `/today`）立刻变小，而旁边的
-      // 工作区分布（读本端点）纹丝不动——同一块界面上两个矛盾的数字。
-      // 这正是 `/today` 当年那个 bug 的同款，只是漏在了第三条路径上。
+      // 这里曾经读的是部署期 `config.includeSubagents` / `config.includeAuxiliary`。
+      // 后果是：用户在设置页关掉「含子会话」后，方块墙/桌宠的累计（读 `/today`）
+      // 立刻变小，而旁边的**工作区分布**（读本端点）纹丝不动——同一块界面上
+      // 两个矛盾的数字。这正是 `/today` 当年那个 bug 的同款，只是漏在了第三条路径上。
       //
-      // 本端点也接受 `includeSub` / `includeAux` 查询参数（与另两个端点同义），
-      // 因为桌宠/主面板轮询时会带上它们；忽略参数会让「当前口径」的显示与实际
-      // 统计不一致。
+      // 口径的传递链要说清楚（早先这里的注释把它简化成「走运行时 prefs」，容易误解）：
+      //
+      //   设置页 → `prefs.json`（运行时开关）→ 客户端把它映射成 `includeSub` /
+      //   `includeAux` 查询参数 → host 侧 `wantsSub()` 做 **config 与查询参数的硬与**。
+      //
+      // 也就是说 **host 从不直接读 prefs**：它在部署期开关允许的范围内，按查询
+      // 参数收窄。所以「三个端点口径一致」的前提是**三个端点的查询参数都由同一处
+      // 构造**（客户端 `todayQuery()`）——只改 host 是修不完整的。
       const includeSub = wantsSub(query)
       const includeAux = wantsAux(query)
       const from = typeof query.get('from') === 'string' && query.get('from') !== ''
