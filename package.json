@@ -64,7 +64,7 @@
     "test:unit": "node --test test/fold.test.mjs && node --test test/blocks.test.mjs && node --test test/prefs.test.mjs && node --test test/models.test.mjs && node --test test/adapter.test.mjs && node --test test/store.retention.test.mjs && node --test test/turn-fold.test.mjs",
     "test:client": "node test/client.smoke.mjs && node test/odometer.text.mjs && node test/sparkline.test.mjs && node test/blocks-cross.test.mjs && node test/distribution.test.mjs",
     "test:host": "node test/host.routes.test.mjs && node --test test/host.today.filter.test.mjs && node --test test/host.session.test.mjs",
-    "test:data": "node test/cross-validate.mjs \"$DSH_HOME/sessions\" && node test/store.e2e.mjs \"$DSH_HOME/sessions\"",
+    "test:data": "node test/cross-validate.mjs \"$DSH_HOME/sessions\" && node test/store.e2e.mjs \"$DSH_HOME/sessions\" && node tools/cross-validate-turns.mjs \"$DSH_HOME\"",
     "visual": "node tools/visual-check.mjs",
     "pet-tree": "node tools/pet-tree.mjs",
     "check": "node --check index.js && node --check client.js && node --check lib/fold.js && node --check lib/store.js && node --check lib/collect.js && node --check lib/adapter.js && node --check lib/blocks.js && node --check lib/models.js && node --check lib/prefs.js && node --check lib/turns.js && node --check tools/check-stray-backticks.mjs && node --check tools/check-boot-identity.mjs && node tools/check-stray-backticks.mjs index.js client.js tools/visual-check.mjs tools/pet-tree.mjs && node tools/check-boot-identity.mjs && node tools/check-pack-links.mjs",

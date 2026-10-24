@@ -332,12 +332,18 @@ node test/host.routes.test.mjs          # 四条路由的 JSON 契约
 node --test test/host.session.test.mjs  # /today?session= 的三级降级（活会话 → 冷读 → —）
 ```
 
-需要本机数据的两个（不在 `npm test` 里）：
+需要本机数据的三个（不在 `npm test` 里）：
 
 ```bash
 node test/cross-validate.mjs "$DSH_HOME/sessions"   # 与独立实现交叉校验真实日志
 node test/store.e2e.mjs "$DSH_HOME/sessions"        # 回填 → 落盘 → 重开 → 幂等 → 并发
+node tools/cross-validate-turns.mjs "$DSH_HOME"     # 逐轮折叠 vs 宿主 tokenUsage 投影
 ```
+
+### 手工验收
+
+自动化测不到三类东西：命令式 DOM 的真实布局、宿主契约的真实形状、降级路径在真实
+数据下的表现。清单见 [docs/ACCEPTANCE.md](docs/ACCEPTANCE.md)。
 
 ### 辅助工具
 
