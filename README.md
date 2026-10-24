@@ -13,7 +13,7 @@ Token 用量看板插件，用于 DSH（DeepSeek Harness）。
 - **历史回填**：从已有会话日志补齐历史，不是装上才开始记
 - **实时捕获**：之后每次模型调用即时入账
 
-> npm 包名是 `dsh-token-wall`（`dsh-token-usage` 已被另一个同类插件占用）。
+> 包名是 `dsh-token-wall`（`dsh-token-usage` 已被另一个同类插件占用）。
 > 插件内部的标识（路由前缀 `/dsh-token-usage`、存储目录、localStorage key）
 > **都保持不变**，所以升级不会丢历史数据。
 
@@ -23,33 +23,37 @@ Token 用量看板插件，用于 DSH（DeepSeek Harness）。
 
 本插件以 Cordis bundle 形式发布，宿主是 DSH 的 Web profile。
 
-### 方式一：从 npm 安装（推荐）
+> ⚠️ **本包尚未发布到 npm** —— `registry.npmjs.org/dsh-token-wall` 目前返回 404。
+> 所以**当前唯一可用的路径是源码安装**（方式一）。下面仍然保留了 npm 的写法，
+> 等包正式发布后直接生效，不必再改文档。
 
-```bash
-cd ~/.dsh/profiles/<profile>
-npm install dsh-token-wall
-```
-
-然后在 profile 的 `cordis.patch.yml` 里插入 bundle：
-
-```yaml
-- insert:
-    - id: dsh-token-usage          # ⚠️ 用这个 id，不是包名
-      name: 'dsh-token-wall'
-      config:
-        keepDays: 400
-```
-
-⚠️ `id` 与 `name` 不同是有意的：`id` 是插件内部标识（决定路由前缀与存储目录），
-必须保持 `dsh-token-usage` 才能沿用已有数据；`name` 才是 npm 包名。
-
-### 方式二：从源码克隆
+### 方式一：从源码克隆（当前推荐）
 
 ```bash
 # <profile> 通常是 ~/.dsh/profiles/<名字>
 # Windows: %USERPROFILE%\.dsh\profiles\<名字>
 cd ~/.dsh/profiles/<profile>/node_modules
 git clone https://github.com/ChinRinhan/dsh-token-wall.git dsh-token-wall
+```
+
+想钉住某个版本就检出对应标签（列表见 [Releases](https://github.com/ChinRinhan/dsh-token-wall/releases)）：
+
+```bash
+cd dsh-token-wall && git checkout v0.2.0
+```
+
+如果你要**继续开发**这个插件，用 `link:` 指向本地 clone 更方便（改完 `client.js`
+走客户端 HMR 自动生效，不必重新安装）：
+
+```json
+"dsh-token-wall": "link:F:/path/to/dsh-token-wall"
+```
+
+### 方式二：从 npm 安装（待发布，暂不可用）
+
+```bash
+cd ~/.dsh/profiles/<profile>
+npm install dsh-token-wall
 ```
 
 ### 方式三：用 DSH 的插件管理
@@ -60,6 +64,21 @@ git clone https://github.com/ChinRinhan/dsh-token-wall.git dsh-token-wall
 plugin_manager  install_bundle  target=dsh-token-wall
 plugin_manager  set_bundle      target=dsh-token-usage  enabled=true
 ```
+
+### 装完后：在 profile 里插入 bundle
+
+无论用哪种方式，都要在 profile 的 `cordis.patch.yml` 里插入条目：
+
+```yaml
+- insert:
+    - id: dsh-token-usage          # ⚠️ 用这个 id，不是包名
+      name: 'dsh-token-wall'
+      config:
+        keepDays: 400
+```
+
+⚠️ `id` 与 `name` 不同是有意的：`id` 是插件内部标识（决定路由前缀与存储目录），
+必须保持 `dsh-token-usage` 才能沿用已有数据；`name` 才是包名。
 
 ### 验证装上
 
@@ -79,19 +98,22 @@ curl http://127.0.0.1:<port>/dsh-token-usage/today
 
 参考量级：本机 116 个会话、22 天、8,410 条记录，回填耗时数秒。
 
-### 从源码安装迁移到 npm 安装
+### 从旧目录名迁移
 
-如果你之前是 clone 到 `node_modules/dsh-token-usage` 的，改成 npm 安装后要注意目录名变了
-（`dsh-token-usage` → `dsh-token-wall`）：
+如果你之前是 clone 到 `node_modules/dsh-token-usage` 的，现在要换成
+`dsh-token-wall`（包改名了，目录名跟着变）：
 
 ```bash
 cd ~/.dsh/profiles/<profile>
 rm -rf node_modules/dsh-token-usage    # 旧目录（如果不是软链）
-npm install dsh-token-wall
+# 然后按「方式一」重新 clone，或等 npm 发布后走「方式二」
 ```
 
 **历史数据不需要迁移**：存储路径由插件内部标识决定，与包名无关，
 仍是 `$DSH_HOME/token-usage/daily.json`。
+
+> 「从源码安装换成 npm 安装」这条路等包正式发布后才有意义，届时只需删掉旧目录再
+> `npm install`，数据同样不受影响。
 
 ---
 
@@ -199,7 +221,7 @@ deepseek-v4.1-flash-free        23.1M   ← 带 free 后缀
 
 ```yaml
 - id: dsh-token-usage              # 内部标识，不要改（决定路由前缀与存储目录）
-  name: 'dsh-token-wall'           # npm 包名
+  name: 'dsh-token-wall'           # 包名
   config:
     keepDays: 400              # 保留天数（落盘时淘汰更早的日键）
     includeSubagents: true     # 计入子代理 / 团队 / workflow 子会话
