@@ -342,6 +342,46 @@ const panellistId = registrations.find((r) => r.options.name === 'sidebar.panell
 const mainKey = registrations.find((r) => r.options.name === 'main')?.options.key
 check('侧栏图标 id 与 main 的 key 一致（点击能打开面板）', panellistId === mainKey,
   `panellist=${panellistId} main=${mainKey}`)
+
+// ── 会话桥（sessionId → focusStore）──────────────────────────────────
+//
+// 桌宠是 root scope 的命令式 DOM，拿不到 `sessionId`；host 也不知道用户在 UI 里
+// 选中了哪个会话。唯一来源是 session-scope 的 slot 组件，所以桥必须：
+//   1. 用**自己独立的 id**——复用 `-odometer` 会顶掉横幅那个条目；
+//   2. **不受 prefs 控制**——`statusBar` 默认 false，接在受控组件里等于永不推数据；
+//   3. 真的把 sessionId 写进 store，且桥本身渲染 null。
+console.log('\n=== 会话桥 ===')
+const dockEntries = registrations.filter((r) => r.options.name === 'conversation.input.dock')
+const bridgeEntry = dockEntries.find((r) => String(r.options.id).includes('session-bridge'))
+check('桥在 conversation.input.dock 注册了自己的条目', bridgeEntry !== undefined,
+  dockEntries.map((r) => r.options.id).join(','))
+check('桥的 id 不与横幅条目冲突',
+  bridgeEntry !== undefined && dockEntries.every((r) => r === bridgeEntry
+    || r.options.id !== bridgeEntry.options.id),
+  dockEntries.map((r) => r.options.id).join(','))
+
+if (bridgeEntry !== undefined) {
+  // 注册的是 `(ownerProps) => h(SessionBridge, ownerProps)`，所以先展开一层拿到
+  // 真正的 SessionBridge 组件（与 GatedBlockPanel 那条注释同款处理）。
+  const outer = renderComponent(bridgeEntry.component, { sessionId: 'sess-smoke' })
+  check('桥的包装层返回一个元素', outer !== null && outer !== undefined && outer.type !== undefined,
+    JSON.stringify(outer))
+  // 展开 SessionBridge 本身：必须返回 null（不占位），且把 sessionId 推给 store。
+  const rendered = renderComponent(outer.type, outer.props)
+  check('桥渲染成 null（不占位）', rendered === null || rendered === undefined,
+    JSON.stringify(rendered))
+  // 同一个 id 重复渲染、以及 sessionId 缺失，都不该抛错。
+  let threw = null
+  try {
+    const a = renderComponent(bridgeEntry.component, { sessionId: 'sess-smoke' })
+    renderComponent(a.type, a.props)
+    const b = renderComponent(bridgeEntry.component, { sessionId: undefined })
+    renderComponent(b.type, b.props)
+  } catch (error) {
+    threw = error
+  }
+  check('桥重复渲染/空 sessionId 不抛错', threw === null, String(threw))
+}
 // ── 样式必须真的进了 DOM ─────────────────────────────────────────────
 //
 // 回归：早先这里断言的是「mock 的 styles.insert 被调用过」。但真实运行时

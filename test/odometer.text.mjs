@@ -151,8 +151,11 @@ console.log('\n桌宠的文本片段:')
 for (const s of petText) if (String(s).trim() !== '') console.log(`  ${JSON.stringify(s)}`)
 
 console.log('')
-check('显示「累计」标签', joined.includes('累计') || joined.includes('3.22'))
-check('显示累计数字（缩写，带单位）', /\d/.test(joined), joined.slice(0, 120))
+// ⚠️ 大数字的标签现在是**本会话**，不再是「累计」。
+//
+// 全时累计没有消失——它改由「池」（N 块）承担，那是同一件事的另一个尺度。
+// 主读数换成会话，是因为用户真正想问的是「这次对话花了多少」。
+check('显示「本会话」标签', joined.includes('本会话'), joined.slice(0, 140))
 
 // ⚠️ 今日 / 速度 / 昨日 三个读数已**从桌宠移除**（见 client.js 的说明）。
 // 它们都回答「过去怎么样」，而桌宠该回答「现在有没有事」；腾出的位置在
@@ -169,20 +172,66 @@ check('**不**显示「今日 vs 昨日」百分比（部分天不可与整天�
 // 当前工作区 chip。
 check('显示当前工作区 chip（beta）', joined.includes('beta'), joined.slice(0, 140))
 
-// ── 保留项：进度条 + 池 ────────────────────────────────────────────────
+// ── 保留项：池（全时累计）──────────────────────────────────────────────
 //
-// 移除三个统计读数**不等于**把视觉主体也删了。池是这插件的身份读数
-// （全时累计块数，只增不减），进度条是「当前这块填到哪」——两者都必须还在。
+// 移除统计读数**不等于**把视觉主体也删了。池是这插件的身份读数
+// （全时累计块数，只增不减），必须还在。
 //
-// TODAY 的 allTime = 582.97M → floor(582.97M / 10M) = 58 块，进度 2.97%。
+// TODAY 的 allTime = 582.97M → floor(582.97M / 10M) = 58 块。
 check('保留池：显示全时累计块数（58 块）', joined.includes('58 块'), joined.slice(0, 140))
-check('保留进度条百分比', /\d+%/.test(joined), joined.slice(0, 140))
 
-// 累计数字不缩写（要看得出低位在涨）——桌宠的大数字用 compact，
-// 但**横幅**（已废弃）用的是不缩写格式。这里只断言桌宠显示的是缩写形式，
-// 避免与「累计不缩写」那条旧规则冲突。
-check('累计用缩写形式（桌宠空间有限）', joined.includes('582.97M') || joined.includes('583M'),
-  joined.slice(0, 120))
+// ── 降级：没有会话数据时不许显示 0 ────────────────────────────────────
+//
+// 这份 TODAY mock **不带** `session` 字段（模拟「桥没挂载」：用户切到了方块墙
+// 面板或设置页）。此时桌宠必须显示 `—`，绝不能画成「0 tokens」——
+// 「读不到」和「花了 0」是两件完全不同的事。
+check('无会话数据时大数字显示 —', joined.includes('—'), joined.slice(0, 140))
+check('无会话数据时上下文条显示 —', joined.includes('—'), joined.slice(0, 140))
+check('无会话数据时不显示 0 作为会话用量', !/本会话\s*0\b/.test(joined), joined.slice(0, 140))
+
+// 池与「本会话」必须是两个独立的数：池不跟随会话。
+check('池与「本会话」并存（两个不同来源）',
+  joined.includes('本会话') && joined.includes('58 块'), joined.slice(0, 160))
+
+// ── 有会话数据时：本会话 + 本轮 + 上下文 ──────────────────────────────
+//
+// 上面那份 mock 不带 session（模拟桥没挂载）。这里换成带 session 的响应，
+// 断言三个新读数真的会显示——否则「降级路径正确」可能掩盖「正常路径也坏」。
+const WITH_SESSION = {
+  ...TODAY,
+  session: {
+    id: 'sess-demo',
+    live: { sessionTokens: 2_130_000, turnTokens: 41_000, turn: 3, steps: 5 },
+    projected: {
+      tokenUsage: {
+        uncachedInputTokens: 2_130_000, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0,
+      },
+      contextPressure: { contextWindow: 1_000_000, pressureTokens: 710_000, projectedTokens: 710_000 },
+    },
+  },
+}
+globalThis.fetch = async () => ({ ok: true, status: 200, json: async () => WITH_SESSION })
+const before2 = new Set(env.body.children)
+instance.apply(ctx)
+const pet2 = env.body.children.find((c) => !before2.has(c))
+for (let i = 0; i < 16; i += 1) await Promise.resolve()
+await new Promise((r) => setTimeout(r, 0))
+await new Promise((r) => setTimeout(r, 0))
+
+const text2 = []
+;(function collect(n) {
+  if (n._text !== undefined && n._text !== '') text2.push(String(n._text))
+  for (const c of n.children ?? []) collect(c)
+})(pet2)
+const joined2 = text2.join('')
+console.log('\n有会话数据时的文本:')
+for (const s of text2) if (String(s).trim() !== '') console.log(`  ${JSON.stringify(s)}`)
+
+check('有会话数据：本会话显示 2.13M', joined2.includes('2.13M'), joined2.slice(0, 160))
+check('有会话数据：本轮显示 41.0K', joined2.includes('41.0K'), joined2.slice(0, 160))
+check('有会话数据：上下文显示 71%', joined2.includes('71%'), joined2.slice(0, 160))
+check('有会话数据：池仍显示全时 58 块（不跟随会话）',
+  joined2.includes('58 块'), joined2.slice(0, 160))
 
 console.log(`\n结果: ${failures.length === 0 ? '全部通过 ✓' : `${failures.length} 处失败 ✗`}`)
 for (const f of failures) console.log('  ' + f)

@@ -31,6 +31,7 @@ import { backfill, entryFromLiveEvent } from './lib/collect.js'
 import { probePersistence } from './lib/adapter.js'
 import { aggregateRange, diffDays, localDayKey, shiftDayKey } from './lib/fold.js'
 import { groupModels, groupVendors } from './lib/models.js'
+import { emptyTurnState, foldTurnEvent, sessionViewOf } from './lib/turns.js'
 
 export const name = 'dsh-token-usage'
 
@@ -229,9 +230,62 @@ export function apply(ctx, rawConfig) {
   /** 最近一次产生用量的模型（**原始名**，含渠道前缀）。空串 = 还不知道。 */
   let currentModel = ''
 
+  /**
+   * 逐会话的逐轮折叠状态：`sessionId → turnState`。
+   *
+   * ## 为什么是**有界**的 Map，而不是落盘
+   *
+   * 「当前会话」在新开会话时本来就该从 0 起算，所以逐轮读数**不需要持久化**：
+   * 重启后你面对的通常是一个新会话。唯一尴尬的是「恢复旧会话」，那时会从 0
+   * 开始涨到下一次调用——这可以接受，而且冷会话的真实数据我们另有来源
+   * （`/today?session=` 会去查宿主投影，见 `sessionUsageOf`）。
+   *
+   * 因此这里只保留最近 `MAX_TURN_SESSIONS` 个会话，超出时按插入顺序淘汰最旧的。
+   * 只存内存、不写盘，符合「重启清零」的既定取舍。
+   */
+  const turnStates = new Map()
+  /** 上限：几百个会话足够覆盖「同时开着几个」的实际使用，且不会无限增长。 */
+  const MAX_TURN_SESSIONS = 64
+
+  /**
+   * 取（或新建）某个会话的折叠状态，并维持 Map 有界。
+   *
+   * 重新 set 一次是为了把该 key 移到插入顺序末尾（Map 保序 → 天然 LRU 近似）。
+   */
+  function turnStateOf(sessionId) {
+    const id = String(sessionId ?? '')
+    if (id === '') return undefined
+    let state = turnStates.get(id)
+    if (state === undefined) {
+      state = emptyTurnState()
+      turnStates.set(id, state)
+      while (turnStates.size > MAX_TURN_SESSIONS) {
+        const oldest = turnStates.keys().next().value
+        turnStates.delete(oldest)
+      }
+    }
+    return state
+  }
+
   ctx.on('session/event', (session, event) => {
     try {
       if (session === null || typeof session !== 'object') return
+
+      // ── 先折逐轮状态 ──
+      //
+      // ⚠️ 顺序很重要：逐轮折叠必须看到 `turn/start` 与 `llm/retry-started`
+      // （它们**不带用量**，会被下面的日聚合路径提前 return）。所以这一步
+      // 必须在 `entryFromLiveEvent` 之前，且不能被它的早退跳过。
+      const sessionId = session.id
+      if (sessionId !== undefined) {
+        const before = turnStateOf(sessionId)
+        if (before !== undefined) {
+          const after = foldTurnEvent(before, event)
+          // foldTurnEvent 对无关事件返回同一个引用 → 无需写回，省一次 Map.set。
+          if (after !== before) turnStates.set(String(sessionId), after)
+        }
+      }
+
       const entry = entryFromLiveEvent({ session, event, store })
       if (entry === undefined) return
       store.fold(entry)
@@ -276,6 +330,74 @@ export function apply(ctx, rawConfig) {
      */
     const wantsSub = (query) => config.includeSubagents && query?.get('includeSub') !== '0'
     const wantsAux = (query) => config.includeAuxiliary && query?.get('includeAux') !== '0'
+
+    /**
+     * 读宿主对某个会话的**精确**投影（`tokenUsage` / `contextPressure`）。
+     *
+     * ## 为什么要分三级降级
+     *
+     * 桌宠要知道「当前会话花了多少、上下文占了多少」，而 host 只知道客户端**告诉**
+     * 它的那个 sessionId（host 自己看不出用户在 UI 里选中了哪个会话）。拿到 id
+     * 之后有三种现实情况，必须逐个覆盖，且**任何一级都不许伪装成 0**：
+     *
+     * 1. **活会话**：`ctx.sessions.get(id)` 命中 → `sessionProjections.snapshot()`
+     *    直接给精确值。这是当前正在跑的主路径，便宜且实时。
+     * 2. **冷会话**（重启后继续旧会话、或切到方块墙面板时）：`sessions.get` 只
+     *    返回**活**会话，未命中返回 undefined。此时退到
+     *    `sessionQuery.observeSession(id, { projectionMode: 'all' })`——它没有活
+     *    会话时会从磁盘把日志读出来折出投影。首次要解日志，之后有缓存。
+     * 3. **都不可用**（老日志没有该投影 / 服务不在组合里 / 会话不存在）：
+     *    返回 `{ available: false, reason }`，由客户端显示 `—`。
+     *
+     * 之所以不自己维护一份「每会话合计」的 Map 当兜底：本插件回填时确实能攒出
+     * 一份，但它只在回填跑过时才有，且对**新会话**永远是过期的。第 2 级直接问
+     * 宿主既更准也更省，Map 只在最后才考虑。
+     *
+     * @param sessionId 会话 id（来自客户端桥）。
+     * @returns `{ available: true, tokenUsage, contextPressure }` 或 `{ available: false, reason }`。
+     */
+    async function sessionUsageOf(sessionId) {
+      const id = String(sessionId ?? '')
+      if (id === '') return { available: false, reason: 'no-session' }
+
+      const pick = (snapshot) => {
+        const values = snapshot?.values ?? {}
+        const tokenUsage = values.tokenUsage
+        if (tokenUsage === undefined) return undefined
+        return { tokenUsage, contextPressure: values.contextPressure }
+      }
+
+      // ① 活会话（最常用、最便宜）。
+      try {
+        const live = ctx.get('sessions')?.get?.(id)
+        const projections = ctx.get('sessionProjections')
+        if (live !== undefined && projections !== undefined) {
+          const hit = pick(projections.snapshot(live))
+          if (hit !== undefined) return { available: true, ...hit }
+        }
+      } catch (error) {
+        logger.warn?.(`[token-usage] 读取活会话投影失败: ${String(error)}`)
+      }
+
+      // ② 冷会话：从磁盘折投影（可能较慢，首次会解日志）。
+      try {
+        const query = ctx.get('sessionQuery')
+        if (query?.observeSession === undefined) {
+          return { available: false, reason: 'no-session-query' }
+        }
+        const observation = await query.observeSession(id, { projectionMode: 'all' })
+        try {
+          const hit = pick(observation?.projections)
+          if (hit !== undefined) return { available: true, ...hit }
+          return { available: false, reason: 'no-token-usage' }
+        } finally {
+          // SessionObservation 是租约，必须释放，否则会留住会话日志句柄。
+          try { observation?.dispose?.() } catch { /* 已释放 */ }
+        }
+      } catch (error) {
+        return { available: false, reason: `query-failed: ${String(error?.message ?? error)}` }
+      }
+    }
 
     /**
      * 全量合计**必须走同一套过滤**。
@@ -426,10 +548,16 @@ export function apply(ctx, rawConfig) {
      * 轻量端点：状态条/里程表只关心「今日 + 累计」这几个数，避免每次轮询都下发
      * 整张聚合表。轮询频率是 1 秒级，所以这里刻意只做 O(日×桶) 的加总。
      *
+     * ## 为什么它是 async
+     *
+     * 带 `session` 参数时要去读宿主投影；**冷会话**（重启后继续旧会话）只能从
+     * `sessionQuery.observeSession` 读盘折出来。但这条慢路径**只在请求带
+     * session 参数且该会话不是活会话时**才走到——常规轮询仍是一次同步加总。
+     *
      * @param query 可选的查询参数。接受 `includeSub` / `includeAux`，与 `/summary`
      *   **同一口径**——否则页面上的「累计」与区间合计会互相矛盾。
      */
-    const buildToday = (query) => {
+    const buildToday = async (query) => {
       const includeSub = wantsSub(query)
       const includeAux = wantsAux(query)
       const day = today()
@@ -448,6 +576,41 @@ export function apply(ctx, rawConfig) {
         includeSub,
         includeAux,
       }).totals
+
+      // ── 当前会话（可选）──
+      //
+      // 客户端用挡板组件把「用户正在看哪个会话」推上来（host 自己看不到这个
+      // 状态）。没带 session 参数时整块字段**不出现**，老客户端行为完全不变。
+      //
+      // 会话用量有两个来源，优先级明确：
+      // - `live`：我们自己增量折的逐轮状态（有「本轮实时在涨」，harness 做不到）；
+      // - `projected`：宿主投影的整份日志精确四桶（权威，但不分轮次）。
+      //
+      // 两者**口径不重叠**：`sessionTokens` 是我们折出来的计费桶之和，宿主的
+      // `tokenUsage` 也是同一份数据的四桶之和，所以它们应当**相等**（这是交叉
+      // 校验点，不是两套口径）。逐轮读数则只有我们有。
+      const sessionParam = typeof query?.get === 'function' ? query.get('session') : undefined
+      let session
+      if (typeof sessionParam === 'string' && sessionParam !== '') {
+        const live = turnStates.get(sessionParam)
+        const projected = await sessionUsageOf(sessionParam)
+        const turnView = live === undefined ? undefined : sessionViewOf(live)
+        session = {
+          id: sessionParam,
+          // 我们折的逐轮读数；宿主投影缺失时它仍可用（这是它最大的价值）。
+          live: turnView ?? null,
+          // 宿主投影（权威的整份日志口径）。
+          projected: projected.available
+            ? {
+              tokenUsage: projected.tokenUsage,
+              contextPressure: projected.contextPressure ?? null,
+            }
+            : null,
+          // 投影不可用的原因（客户端据此显示 — 并说明为什么）。
+          projectedUnavailable: projected.available ? undefined : projected.reason,
+        }
+      }
+
       return {
         ok: true,
         day,
@@ -498,6 +661,8 @@ export function apply(ctx, rawConfig) {
           store: store.describe(),
           sessionsTracked: store.watermarks?.size ?? 0,
         },
+        // 仅当请求带 `session` 参数时出现（老客户端行为不变）。
+        ...session === undefined ? {} : { session },
       }
     }
 
@@ -569,12 +734,17 @@ export function apply(ctx, rawConfig) {
         kind: 'exact',
         path: `${ROUTE_PREFIX}/today`,
         handler: (req, res) => {
-          try {
-            const url = new URL(req.url ?? '/', 'http://localhost')
-            sendJson(res, buildToday(url.searchParams))
-          } catch (error) {
-            sendJson(res, { ok: false, error: String(error?.message ?? error) }, 500)
-          }
+          // `buildToday` 是 async（带 session 时要读宿主投影，冷会话可能读盘）。
+          // 错误必须在这里收住并回 500——未处理的 rejection 会让整个 Host 挂掉，
+          // 而这条路径由客户端每秒轮询，绝不能因为一个会话读不到就崩。
+          void (async () => {
+            try {
+              const url = new URL(req.url ?? '/', 'http://localhost')
+              sendJson(res, await buildToday(url.searchParams))
+            } catch (error) {
+              sendJson(res, { ok: false, error: String(error?.message ?? error) }, 500)
+            }
+          })()
         },
       },
       {

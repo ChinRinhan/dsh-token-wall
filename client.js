@@ -109,6 +109,12 @@ window.__ModuleLoader__.load({
       petHint: '拖动标题栏可移动',
       petCollapse: '折叠',
       petExpand: '展开',
+      // ── 会话读数（桌宠）──
+      sessionLabel: '本会话',
+      turnLabel: '本轮',
+      contextLabel: '上下文',
+      contextUnavailable: '上下文占用暂不可用',
+      contextCollapsedHint: '上下文接近上限，快会被压缩',
       navWall: 'Token 方块墙',
       kindChat: '对话调用',
       kindAux: '辅助调用（压缩等）',
@@ -207,6 +213,12 @@ window.__ModuleLoader__.load({
       petHint: 'Drag the title bar to move',
       petCollapse: 'Collapse',
       petExpand: 'Expand',
+      // ── Session readouts (pet) ──
+      sessionLabel: 'This session',
+      turnLabel: 'This turn',
+      contextLabel: 'Context',
+      contextUnavailable: 'Context usage unavailable',
+      contextCollapsedHint: 'Context nearly full — compaction is close',
       navWall: 'Token Block Wall',
       kindChat: 'Chat calls',
       kindAux: 'Auxiliary calls (compaction etc.)',
@@ -805,6 +817,13 @@ window.__ModuleLoader__.load({
 #dsh-tu-pet .dsh-tu-pet-pool-label {
   color: var(--dsw-alias-label-secondary); font-weight: 600;
   font-variant-numeric: tabular-nums;
+}
+/* 池那一行的后缀（本轮用量）：比池本身弱一档——它和「本会话」是同一个数在涨，
+   不该和「攒下的块数」争夺注意力。 */
+#dsh-tu-pet .dsh-tu-pet-stat-dim {
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 10px; font-variant-numeric: tabular-nums;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 /* 攒到新的一块：池弹一下。 */
 #dsh-tu-pet .dsh-tu-pet-pool.is-new { animation: dsh-tu-pool-pop 600ms ease-out; }
@@ -1961,6 +1980,34 @@ window.__ModuleLoader__.load({
       return h(BlockPanel, props)
     }
 
+    /**
+     * **会话桥**：把当前会话 id 推给 `focusStore`，自己不渲染任何东西。
+     *
+     * ## 为什么必须有它
+     *
+     * 桌宠是 root scope 的命令式 DOM，拿不到 `sessionId`；host 也不知道用户在 UI
+     * 里选中了哪个会话。只有 session-scope 的 slot 组件拿得到这个 prop，所以这里
+     * 做一个「只写不画」的组件，把它挂进 `conversation.input.dock`。
+     *
+     * ## 为什么单独注册、不复用 GatedOdometer
+     *
+     * `GatedOdometer` 在 `prefs.statusBar === false` 时**提前 return null**。
+     * 而 `statusBar` 默认就是 false —— 把桥接在那里，sessionId 永远推不进来，
+     * 桌宠读数永远为空，而且**不报任何错**。所以桥是独立条目、永不受开关控制。
+     *
+     * ## 为什么在 render 期间写 store 是安全的
+     *
+     * `focusStore.set` 对同一个 id 只刷新时间戳、不通知订阅者（见其实现），
+     * 所以重复 render 不会造成通知风暴；换会话时才通知一次。这里刻意不用
+     * `useEffect`，因为 effect 在 commit 后才跑，而桌宠的下一次轮询可能更早——
+     * 那样会有一拍读到旧会话。同步写能让两者同拍。
+     */
+    function SessionBridge(props) {
+      const sessionId = props?.sessionId
+      focusStore.set(typeof sessionId === 'string' ? sessionId : undefined)
+      return null
+    }
+
     function BlockPanelIcon({ size = 16 } = {}) {
       const s = Number(size) || 16
       const cells = []
@@ -2255,36 +2302,44 @@ window.__ModuleLoader__.load({
       collapseBtn.textContent = '–'
       head.append(grip, title, wsChip, collapseBtn)
 
-      // 大数字（累计或今日，随 scope 切换）。带一个「累计」标签——
-      // 桌宠是独立的小面板，用户单看它不知道这个数字是什么口径。
+      // 大数字：**本会话**用量。
+      //
+      // 标签必须写明口径——桌宠是独立的小面板，用户单看一个数字不知道它是
+      // 「本会话」还是「全时累计」。早先这里是累计，标签写「累计」；现在主读数
+      // 换成会话（这才是用户问的那个问题），全时累计改由下面的「池」承担。
       const total = doc.createElement('div')
       total.className = 'dsh-tu-pet-total'
       const totalLabel = doc.createElement('span')
       totalLabel.className = 'dsh-tu-pet-total-label'
-      totalLabel.textContent = t('allTimeShort')
+      totalLabel.textContent = t('sessionLabel')
       const totalValue = doc.createElement('span')
       totalValue.className = 'dsh-tu-pet-total-value'
       total.append(totalLabel, totalValue)
 
-      // ── 单充能块 + 池（取代 30 格网格）──────────────────────────────
+      // ── 上下文条 + 池 ─────────────────────────────────────────────────
       //
-      // ## 为什么不再铺 30 格
+      // ## 进度条现在的语义：**上下文占用**
       //
-      // 桌宠只有 172~208px 宽，30 格（10×3）挤在里面每格不到 16px，既看不清
-      // 也占高度。而方块墙主面板已经有 100 格的大图了——桌宠再铺一遍是重复。
+      // PR1 之前它是「当前这个 10M 方块填了多少」——一个任意刻度，跟任何决策
+      // 都无关。现在换成 `projectedTokens / contextWindow`：这是唯一**有后果**的
+      // 进度，快满就会被压缩，用户会真的据此行动。分母来自宿主的
+      // `contextPressure.contextWindow`（实测 1M 与 128K 两种，绝不能写死）。
       //
-      // ## 现在的表达
+      // ## 池仍然是**全时累计块数**
       //
-      // 一块**会充能的方块**（当前这块填了多少）+ 一个**池**（已经攒了多少块）。
-      // 「充能 → 满 → 推进池里」这个动作本身就是「越攒越多」最直观的形式，
-      // 而且只需要一块的面积。
+      // 这是插件的身份读数，只增不减。**不能**让它跟随会话：一个会话通常只有
+      // 0.2 块，跟随就会长期显示「0 块」，彻底失去意义。
       //
       // ```
-      // ┌──────────────┐
-      // │ ▓▓▓▓▓░░░ 52% │  ← 充能块：当前这块填了多少
-      // │ ▣ 341 块      │  ← 池：已攒下的块数
-      // └──────────────┘
+      // ┌──────────────────────┐
+      // │ 本会话 2.13M          │  ← 大数字：本会话用量
+      // │ ▓▓▓▓▓▓▓░░░ 71%        │  ← 上下文占用（快满会被压缩）
+      // │ ▣ 58 块 · 本轮 41K    │  ← 池（全时）+ 本轮实时
+      // └──────────────────────┘
       // ```
+      //
+      // ⚠️ class 名沿用 `charge*`：`blocks-cross.test.mjs` 与 `client.smoke.mjs`
+      // 按这些名字定位元素。改名会让两个测试静默失去覆盖，而改名本身没有收益。
       const charge = doc.createElement('div')
       charge.className = 'dsh-tu-pet-charge'
       const chargeBlock = doc.createElement('div')
@@ -2296,10 +2351,7 @@ window.__ModuleLoader__.load({
       chargePct.className = 'dsh-tu-pet-charge-pct'
       charge.append(chargeBlock, chargePct)
 
-      // 池：已攒下的整块数。
-      //
-      // 这里是「充能→满→推进池里」那个池。用图标 + 数字表达，
-      // 不再铺一排小方块——桌宠宽度有限，铺开反而看不清。
+      // 池：已攒下的整块数（全时累计）+ 本轮用量。
       const pool = doc.createElement('div')
       pool.className = 'dsh-tu-pet-pool'
       const poolIcon = doc.createElement('span')
@@ -2308,26 +2360,15 @@ window.__ModuleLoader__.load({
       poolIcon.setAttribute('aria-hidden', 'true')
       const poolLabel = doc.createElement('span')
       poolLabel.className = 'dsh-tu-pet-pool-label'
-      pool.append(poolIcon, poolLabel)
+      // 本轮用量：和池同一行，用弱一档的颜色——它和「本会话」是同一个数在涨，
+      // 不值得单独占一行（Q13 保留四个读数，但不等于四行）。
+      const turnLabel = doc.createElement('span')
+      turnLabel.className = 'dsh-tu-pet-stat-dim'
+      pool.append(poolIcon, poolLabel, turnLabel)
 
-      // ⚠️ 不再有「底行块数 + 下一块进度条」：那块信息已经被
-      // 「进度条（当前填到多少）」+「池（攒了多少）」完整覆盖，
-      // 留着就是同一件事说两遍。
       const foot = pool
 
-      // ⚠️ **仪表行已移除**（今日 / 速度 / 昨日 三个读数）。
-      //
-      // 移除理由：这三个数字都回答「过去怎么样」，而桌宠真正该回答的是
-      // 「现在有没有事」。它们被移除后腾出的位置，在 PR2 交给两个有后果的读数：
-      // **本会话用量**与**上下文占用**（后者快满会被压缩，用户会据此行动）。
-      //
-      // 这也纠正了一处口径混淆：早先「今日」既当仪表行的主读数、又当大数字的
-      // 备选 scope，两个位置显示同一件事。
-
-      // 组装顺序：标题栏 → 累计数字 → **进度条 + 池**（视觉主体）。
-      //
-      // ⚠️ 进度条要紧跟累计数字：它是「当前这块填了多少」——和累计是同一件事的
-      // 两个尺度（总量 / 当前进度）。
+      // 组装顺序：标题栏 → 本会话大数字 → **上下文条 + 池**（视觉主体）。
       root.append(head, total, charge, foot)
       doc.body.appendChild(root)
 
@@ -2340,12 +2381,41 @@ window.__ModuleLoader__.load({
       let lastRenderKey = ''
       // 上一帧已填的块数：用于检测「跨过 10M 整数」并触发落块脉冲。
       let prevFilled = -1
+      // 上一帧的会话读数与上下文占用：折叠态切换时要用它们重算大数字，
+      // 而按钮事件里拿不到最新的 data。
+      let lastSessionTokens
+      let lastOccupancy
+
+      /**
+       * 折叠态自适应读数（Q7=C）。
+       *
+       * 折叠态是 99% 时间被看到的那一屏，它该回答「现在有没有事」：
+       * - **接近压缩**（≥ 80%）→ 显示上下文百分比，这是唯一的紧急信息；
+       * - 平时 → 显示本会话用量，只是参考。
+       *
+       * 阈值取 80% 而不是 90%：90% 是「已经危险」的告警线（`is-almost` 用那个），
+       * 而折叠态需要**提前**一点把注意力引过去，用户才有时间反应。
+       */
+      function applyCollapsedReadout(occupancy) {
+        if (occupancy !== undefined) lastOccupancy = occupancy
+        const urgent = lastOccupancy !== undefined && lastOccupancy >= 0.8
+        if (collapsed && urgent) {
+          totalLabel.textContent = t('contextLabel')
+          totalValue.textContent = `${Math.round(lastOccupancy * 100)}%`
+          total.title = t('contextCollapsedHint')
+        } else {
+          totalLabel.textContent = t('sessionLabel')
+          totalValue.textContent = lastSessionTokens === undefined ? '—' : compact(lastSessionTokens)
+          total.title = ''
+        }
+      }
 
       // ── 折叠/展开 ──
       function applyCollapsed() {
         root.classList.toggle('is-collapsed', collapsed)
         collapseBtn.textContent = collapsed ? '+' : '–'
         collapseBtn.setAttribute('aria-label', collapsed ? t('petExpand') : t('petCollapse'))
+        applyCollapsedReadout(lastOccupancy)
       }
 
       // ── 渲染（只改差异，不重建）──
@@ -2365,26 +2435,65 @@ window.__ModuleLoader__.load({
           })
         }
 
-        // ⚠️ 大数字与池**都取全时累计**（不随 scope 变）。
+        // ── 会话读数（可选）────────────────────────────────────────────
         //
-        // 池永远是「攒下的全部块数」——它是这插件的身份读数，一个会话通常
-        // 只有 0.2 块，若让池跟随会话就会长期显示 0 块，彻底失去意义（见 PR2）。
+        // `data.session` 只在请求带了 `?session=` 时才出现。两个来源各司其职：
+        // - `live`：我们自己增量折的逐轮状态 → 有「本轮实时在涨」；
+        // - `projected`：宿主投影的整份日志 → 权威的会话总量与上下文占用。
+        //
+        // ⚠️ 任何一项拿不到都显示 `—`，**绝不显示 0**。「读不到」和「花了 0」
+        // 是两件完全不同的事，把前者画成后者是本插件最不能接受的失效形态
+        // （DESIGN.md 里反复强调过）。
+        const session = data?.session
+        const live = session?.live
+        const projected = session?.projected
+        const tokenUsage = projected?.tokenUsage
+        const pressure = projected?.contextPressure
+
+        // 本会话用量：优先宿主投影（权威、含整份日志），退到我们自己折的。
+        const sessionTokens = tokenUsage === undefined || tokenUsage === null
+          ? (live === undefined || live === null ? undefined : Number(live.sessionTokens) || 0)
+          : Number(tokenUsage.uncachedInputTokens) + Number(tokenUsage.outputTokens)
+            + Number(tokenUsage.cacheReadTokens) + Number(tokenUsage.cacheWriteTokens)
+
+        totalValue.textContent = sessionTokens === undefined ? '—' : compact(sessionTokens)
+        totalLabel.textContent = t('sessionLabel')
+        lastSessionTokens = sessionTokens
+
+        // 上下文占用：`projectedTokens` 是「下一次请求的预计占用」，比上一拍的
+        // 样本更贴近即将发生的事（harness 的 contextOccupancy 也是这个优先级）。
+        const usedTokens = pressure?.projectedTokens ?? pressure?.pressureTokens
+        const windowTokens = pressure?.contextWindow
+        const occupancy = Number.isFinite(usedTokens) && Number.isFinite(windowTokens) && windowTokens > 0
+          ? Math.max(0, Math.min(1, usedTokens / windowTokens))
+          : undefined
+
+        if (occupancy === undefined) {
+          // 没有上下文数据：清空填充、显示 —，而不是留一个假的 0% 条。
+          chargeFill.style.width = '0%'
+          chargePct.textContent = '—'
+          chargeBlock.classList.remove('is-almost')
+          chargeBlock.title = t('contextUnavailable')
+        } else {
+          chargeFill.style.width = `${(occupancy * 100).toFixed(2)}%`
+          chargePct.textContent = `${Math.round(occupancy * 100)}%`
+          chargeBlock.classList.toggle('is-almost', occupancy >= 0.9)
+          chargeBlock.title = `${t('contextLabel')} ${compact(usedTokens)} / ${compact(windowTokens)}`
+        }
+
+        // 池：**全时累计**块数（不随会话变）。
         const totalTokens = Number(data?.allTime?.totalTokens) || 0
         const wall = blockWall(totalTokens)
-
-        totalValue.textContent = compact(totalTokens)
-
-        // 进度条：当前这一块填了多少（0~100%）。
-        const pct = Math.round(wall.progress * 100)
-        chargeFill.style.width = `${(wall.progress * 100).toFixed(2)}%`
-        chargePct.textContent = `${pct}%`
-        // 快满了给它一个强调（>= 90%）。
-        // PR1 语义是「即将落块」；PR2 换成上下文占用后变成「即将被压缩」。
-        chargeBlock.classList.toggle('is-almost', wall.progress >= 0.9)
-
-        // 池：已攒下的整块数。
         poolLabel.textContent = `${wall.filled} ${t('wallBlockUnit')}`
         pool.title = `${wall.filled} × ${compact(BLOCK_UNIT)} = ${compact(totalTokens)}`
+
+        // 本轮用量：和「本会话」是同一个数在涨，做成池那一行的后缀。
+        const turnTokens = live === undefined || live === null ? undefined : Number(live.turnTokens)
+        if (turnTokens === undefined) {
+          turnLabel.textContent = ''
+        } else {
+          turnLabel.textContent = `· ${t('turnLabel')} ${compact(turnTokens)}`
+        }
 
         // 当前工作区 chip（host 告知的「当前会话是哪个」）。
         const currentCwd = typeof data?.current?.workspace === 'string' ? data.current.workspace : ''
@@ -2396,15 +2505,23 @@ window.__ModuleLoader__.load({
           wsChip.hidden = false
         }
 
+        // 折叠态自适应（Q7=C）：折叠是 99% 时间被看到的那一屏，它该回答
+        // 「现在有没有事」。接近压缩时那才是唯一的紧急信息，平时本会话量只是参考。
+        applyCollapsedReadout(occupancy)
+
         // 只有内容真的变了才碰 DOM：避免无谓的样式写入打断 CSS 过渡。
-        const key = `${wall.filled}|${wall.progress.toFixed(4)}|${currentCwd}`
+        const key = [
+          wall.filled,
+          occupancy === undefined ? 'na' : occupancy.toFixed(4),
+          sessionTokens === undefined ? 'na' : sessionTokens,
+          turnTokens === undefined ? 'na' : turnTokens,
+          currentCwd,
+          collapsed ? 1 : 0,
+        ].join('|')
         if (key === lastRenderKey) return
         lastRenderKey = key
 
         // 落块脉冲：跨过 10M 整数时，让**池**弹一下（「又攒到一块」）。
-        //
-        // 网格没了，所以不再逐格点亮；现在「攒到一块」的反馈落在池上：
-        // 池里的数字跳动 + 一个短暂的放大。
         const crossed = prevFilled >= 0 && wall.filled > prevFilled
         if (crossed) {
           pool.classList.remove('is-new')
@@ -2417,12 +2534,25 @@ window.__ModuleLoader__.load({
       }
 
       // ── 轮询 ──
-      // /today 给全部读数：累计、今日、昨日、本次运行平均速度、当前工作区、
-      // 以及运行时开关（prefs）。一个端点就够，不需要再单独拉 workspace。
+      // /today 给全部读数：今日/累计/当前工作区/prefs，以及**带 `?session=` 时的
+      // 会话读数**（本会话、本轮、上下文占用）。一个端点就够。
       //
       // 统计口径每次轮询都从 `prefsStore` 现读：用户在设置页改完，下一拍就生效
       // （桌宠不是 React 组件，拿不到 props，只能从共享 store 取）。
-      const todayPath = () => `${ROUTE_PREFIX}/today${todayQuery(prefsStore.value)}`
+      //
+      // `?session=` 来自 `focusStore`（由 session-scope 的桥写入）。桥没挂载时
+      // `focusStore.value` 是 undefined，此时**不带**该参数——host 就会省略整个
+      // `session` 字段，桌宠显示 `—`。这正是我们要的降级：不猜、不显示 0。
+      //
+      // ⚠️ 陈旧 id 照用但标注：桥所在 slot 可能已不在树上（用户切到方块墙面板），
+      // 那时 `focusStore.value` 仍是最后一次看到的值。它仍是我们知道的最好信息，
+      // 只是可能不是用户此刻正看的那个会话。
+      const todayPath = () => {
+        const base = `${ROUTE_PREFIX}/today${todayQuery(prefsStore.value)}`
+        const id = focusStore.value
+        if (typeof id !== 'string' || id === '') return base
+        return `${base}${base.includes('?') ? '&' : '?'}session=${encodeURIComponent(id)}`
+      }
       const pollTimer = setInterval(() => {
         fetch(todayPath(), { cache: 'no-store' })
           .then((r) => (r.ok ? r.json() : undefined))
@@ -2555,6 +2685,71 @@ window.__ModuleLoader__.load({
         return () => this.listeners.delete(fn)
       },
     }
+
+    /**
+     * 「用户正在看哪个会话」的共享状态 —— **数据桥**。
+     *
+     * ## 为什么需要它
+     *
+     * 桌宠是 root scope 的**命令式 DOM**（挂在 `document.body` 上），它拿不到
+     * session-scope 的 props，所以**问不出当前会话是哪个**。而 host 更不知道：
+     * 「UI 里选中了哪个会话」是纯客户端状态。
+     *
+     * 唯一可靠的来源是一个 **session-scope 的 slot 组件**——它拿得到 `sessionId`
+     * prop。所以那个组件只做一件事：把 id 写进这个 store。桌宠订阅它，轮询时
+     * 把 id 作为 `?session=` 传给 host，由 host 去查真实数据。
+     *
+     * ## 为什么只传 id，不传数字
+     *
+     * 数字统一由 host 出。若桥也传数字，就会出现两个来源（浏览器折的 vs host 折的），
+     * 而它们迟早不一致——正是 DESIGN.md 里警告过的那类「同一件事两个读数」。
+     * 传一个字符串则不可能漂移。
+     *
+     * ## ⚠️ 桥必须**不受开关控制**
+     *
+     * 早先唯一的 session-scope 挂载点是 `conversation.input.dock` 里的
+     * `GatedOdometer`，它在 `prefs.statusBar === false` 时**直接返回 null**。
+     * 而 `statusBar` 默认就是 false —— 把桥接在那里，sessionId 永远推不进来，
+     * 桌宠读数永远是空，**而且不会报任何错**。所以桥单独注册一个自己的条目
+     * （见 `SessionBridge`），永远渲染 null，只负责推数据。
+     */
+    const focusStore = {
+      /** 当前会话 id；`undefined` = 还没收到（或桥未挂载）。 */
+      value: undefined,
+      /** 上次更新时间：桥卸载后 value 会变陈旧，用它判断是否还可信。 */
+      updatedAt: 0,
+      listeners: new Set(),
+      set(sessionId) {
+        const next = typeof sessionId === 'string' && sessionId !== '' ? sessionId : undefined
+        if (next === this.value) {
+          // 同一个 id 也要刷新时间戳：说明桥还活着，值仍可信。
+          this.updatedAt = Date.now()
+          return
+        }
+        this.value = next
+        this.updatedAt = Date.now()
+        for (const fn of this.listeners) {
+          try {
+            fn(this.value)
+          } catch {
+            // 单个订阅者出错不该影响其他订阅者。
+          }
+        }
+      },
+      subscribe(fn) {
+        this.listeners.add(fn)
+        return () => this.listeners.delete(fn)
+      },
+    }
+
+    /**
+     * 陈旧的阈值：桥在正常使用中每渲染一次都会刷新时间戳。
+     *
+     * 超过这个时长没有任何刷新，说明桥所在的 slot 已经不在树上（用户切到了
+     * 方块墙面板或设置页），此时这个 id **可能不是用户正看着的那个会话**，
+     * 但仍是我们知道的最好信息——所以照用，只是 UI 上要标注是回退值。
+     */
+    const FOCUS_STALE_MS = 15_000
 
     const locale = {
       t: (key) => DICT_ZH[key] ?? key,
@@ -2704,6 +2899,25 @@ window.__ModuleLoader__.load({
           render.__component = BlockPanel
           return slots.register({ name: 'main', key: WALL_PANEL_ID }, render)
         })
+
+        // ③.5 会话桥：**只写不画**，永远渲染 null。
+        //
+        // 它的唯一职责是把 session-scope 的 `sessionId` 推给 focusStore，让
+        // root scope 的命令式桌宠知道「用户正在看哪个会话」。
+        //
+        // ⚠️ 三个刻意的选择：
+        //   1. **用自己独立的 id**（不是复用 `-odometer`）——复用 id 会顶掉那个
+        //      条目（slot 契约：同 id 即替换），横幅就再也渲染不出来了。
+        //   2. **不受任何 prefs 开关控制**——`statusBar` 默认 false，接在受控组件
+        //      里等于永远不推数据，而且不报错。
+        //   3. **order 放最前**（-100）——保证它在同一帧里先于其他条目 render，
+        //      桌宠下一次轮询就能读到本帧的会话 id。
+        slots.inject('conversation.input.dock', () =>
+          slots.register(
+            { name: 'conversation.input.dock', id: `${PKG_NAME}-session-bridge`, order: -100 },
+            (ownerProps) => h(SessionBridge, ownerProps),
+          ),
+        )
 
         // ④ 桌宠：**不走 slot**。
         //

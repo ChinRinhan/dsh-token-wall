@@ -7,7 +7,7 @@ Token 用量看板插件，用于 DSH（DeepSeek Harness）。
 ![方块墙主面板与桌宠](docs/screenshots/panel.png)
 
 - **方块墙**：每 10M tokens 填一格，100 格一页，累计只增不减
-- **桌宠**：常驻角落里的小面板，一个充能块 + 一个池，可拖动
+- **桌宠**：常驻角落里的小面板，本会话用量 + 上下文占用 + 全时累计块池，可拖动
 - **消耗分布**：按工作区 / 模型 / 厂商三档切换
 - **设置页**：区间汇总表，支持按天 / 周 / 月 / 渠道 / 模型 / 类型分组
 - **历史回填**：从已有会话日志补齐历史，不是装上才开始记
@@ -124,20 +124,26 @@ npm install dsh-token-wall
 
 ```
 ┌─ Token 方块墙  ● alpha  ────┐
-│ 累计 2.98B                  │
-│ ▓▓▓▓▓▓▓▓▓▓▓▓▓░░  94%       │  ← 充能块：当前这块填了多少
-│ ■ 297 块                    │  ← 池：已攒下的整块数
-│ 今日 31.44M 1.1% ·          │
-│ 速度 4.0K/s  昨日 127.79M   │
+│ 本会话 2.13M                │  ← 这次对话花了多少
+│ ▓▓▓▓▓▓▓░░░░░░  71%         │  ← 上下文占用（快满会被压缩）
+│ ■ 297 块 · 本轮 41.0K       │  ← 池（全时累计）· 本轮实时
 └─────────────────────────────┘
 ```
 
+- **本会话**：当前这个会话的用量。没有会话信息时显示 `—`（不显示 0）。
+- **上下文占用**：`projectedTokens / contextWindow`。这是唯一**有后果**的进度——
+  快满就会被压缩，用户会据此行动。分母来自宿主，不写死（实测有 1M / 128K 两种）。
+- **本轮**：进行中的这一轮，实时在涨。harness 自带的「本轮用量」只在轮次**结束
+  后**才出现，这一点是它做不到的。
+- **池**：全时累计块数，**不随会话变**。一个会话通常只有 0.2 块，跟随就会长期
+  显示「0 块」，失去意义。
 - **拖动**：按住标题栏拖，指针移出窗口也继续跟手
-- **单击标题栏**：折叠 / 展开（折叠后只剩一行数字，仍可拖动）
+- **单击标题栏**：折叠 / 展开。折叠态是自适应的——接近压缩（≥ 80%）时显示上下文
+  百分比，平时显示本会话量
 - **位置记忆**：位置存在 `localStorage`，窗口缩放时自动钳制在可视范围内
 - **窄屏隐藏**：≤768px 不显示（拖拽手势会和页面滚动打架）
 
-动效很克制：充能到 90% 以上时充能块轻微呼吸，攒到新的一块时池弹一下。系统开了「减少动态效果」时会全部关掉。
+动效很克制：上下文到 90% 以上时进度条轻微呼吸，攒到新的一块时池弹一下。系统开了「减少动态效果」时会全部关掉。
 
 ### 消耗分布
 
@@ -222,12 +228,26 @@ deepseek-v4.1-flash-free        23.1M   ← 带 free 后缀
 
 | 路径 | 说明 |
 |---|---|
-| `GET /dsh-token-usage/today` | 今日 + 昨日 + 累计 + 本次运行平均速度 + 当前工作区/模型 + 运行时开关 + 诊断。接受 `includeSub` / `includeAux`，与 `/summary` **同一口径** |
+| `GET /dsh-token-usage/today` | 今日 + 昨日 + 累计 + 本次运行平均速度 + 当前工作区/模型 + 运行时开关 + 诊断。接受 `includeSub` / `includeAux`，与 `/summary` **同一口径**。带 `session=<id>` 时额外下发该会话的 `session` 块（见下） |
 | `GET /dsh-token-usage/summary` | 区间汇总。`groupBy` 可取 `day` `week` `month` `provider` `model` `providerModel` `kind` `workspace` `modelNorm` `vendor` |
-| `GET /dsh-token-usage/workspaces` | 工作区分布，只回 top N（`limit` / `from` / `to`） |
+| `GET /dsh-token-usage/workspaces` | 工作区分布，只回 top N（`limit` / `from` / `to`）。与 `/today`、`/summary` **同一口径**（运行时 prefs） |
 | `GET / PUT /dsh-token-usage/prefs` | 运行时开关（`statusBar` / `pet` / `wallPanel`）。唯一可写的端点 |
 
 `/summary` 还支持 `from` / `to` / `includeSub` / `includeAux` / `workspace` 参数。
+
+### `?session=` 的三级降级
+
+桌宠要显示「当前会话」，而 host 自己看不到用户在 UI 里选中了哪个会话——由客户端桥
+（一个只写不画的 session-scope 组件）把 id 推上来。拿到 id 后：
+
+| 情况 | 行为 |
+|---|---|
+| **活会话** | `ctx.sessions.get(id)` 命中 → `sessionProjections.snapshot()`，实时且便宜 |
+| **冷会话**（重启后继续旧会话） | `sessionQuery.observeSession(id, { projectionMode: 'all' })` 从磁盘折投影 |
+| **都不可用** | `projected: null` + `projectedUnavailable: <原因>`，客户端显示 `—` |
+
+`session` 块里有两个互不重叠的来源：`live`（我们自己增量折的逐轮读数，含「本轮实时」）
+与 `projected`（宿主投影的整份日志口径）。**任何一项拿不到都显示 `—`，绝不显示 0**。
 
 ---
 
@@ -302,12 +322,14 @@ node --test test/models.test.mjs        # 模型归并：归一化、代际不�
 node --test test/adapter.test.mjs       # 宿主接口：新旧两代形状必须同一读数；认不出来要报 degraded
 node --test test/store.retention.test.mjs # 保留期：内存与盘同时淘汰，且淘汰后不复活
 node --test test/prefs.test.mjs         # 运行时开关存储：缺省、原子写、脏输入、损坏回退
-node test/client.smoke.mjs              # 四个 slot 注册、样式真进 DOM、主题 token
-node test/odometer.text.mjs             # 桌宠可见文案逐条断言
+node --test test/turn-fold.test.mjs     # 逐轮折叠：重试累加、同步骤替换、reasoning 不进总量、缺边界容错
+node test/client.smoke.mjs              # 四个 slot 注册、会话桥、样式真进 DOM、主题 token
+node test/odometer.text.mjs             # 桌宠可见文案逐条断言（含「无会话数据必须显示 —」）
 node test/sparkline.test.mjs            # 上升曲线几何：左低右高、不除零
-node test/blocks-cross.test.mjs         # 主面板/桌宠 与 lib/blocks.js 的跨端一致性
+node test/blocks-cross.test.mjs         # 池内块数与 lib/blocks.js 跨端一致 + 上下文条由 contextPressure 驱动
 node test/distribution.test.mjs         # 消耗分布：形状守卫、列宽预算、当前项高亮
 node test/host.routes.test.mjs          # 四条路由的 JSON 契约
+node --test test/host.session.test.mjs  # /today?session= 的三级降级（活会话 → 冷读 → —）
 ```
 
 需要本机数据的两个（不在 `npm test` 里）：

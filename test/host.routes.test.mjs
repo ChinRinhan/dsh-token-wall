@@ -98,16 +98,35 @@ function makeCtx() {
  * @param body   请求体（PUT 时用）。**异步**：prefs 的 PUT handler 是
  *               「读 body → 解析 → 写盘 → 响应」，需要等 end 事件。
  */
-function callRoute(path, search = '', { method = 'GET', body = undefined } = {}) {
+/**
+ * 调用一个已注册的 route，返回解析后的 JSON。
+ *
+ * ⚠️ **必须是 async**：`/today` 的 handler 现在会 await（带 `session` 参数时
+ * 要读宿主投影，冷会话可能读盘）。响应是在微任务里 `end()` 的，同步取
+ * `text` 只会拿到 undefined——这正是本文件早先报 `"undefined" is not valid
+ * JSON` 的原因。
+ *
+ * @param path   路由路径。
+ * @param search 查询串。
+ * @param method HTTP 方法（默认 GET）。
+ * @param body   请求体（PUT 时用）。
+ */
+async function callRoute(path, search = '', { method = 'GET', body = undefined } = {}) {
   const route = routes.find((r) => r.path === path)
   assert.notEqual(route, undefined, `未注册路由 ${path}`)
   let text
+  let resolveDone
+  const done = new Promise((resolve) => { resolveDone = resolve })
   const res = {
     writeHead() {},
-    end(payload) { text = payload },
+    end(payload) {
+      text = payload
+      resolveDone()
+    },
   }
   if (method === 'GET') {
     route.handler({ url: `${path}${search}`, method: 'GET' }, res)
+    await done
     return JSON.parse(text)
   }
   // 写方法：伪造一个带 on('data')/on('end') 的 req。
@@ -122,6 +141,7 @@ function callRoute(path, search = '', { method = 'GET', body = undefined } = {})
   }
   route.handler(req, res)
   assert.equal(settled, true, 'PUT handler 必须同步走完 end（body 是同步喂的）')
+  await done
   return JSON.parse(text)
 }
 
@@ -137,7 +157,7 @@ check('/prefs 已注册', routes.some((r) => r.path === '/dsh-token-usage/prefs'
 
 // ── ① /today 必须下发 diagnostics（回归：曾缺失 ⇒ 面板误报「仅内存」）──
 console.log('\n=== /today 响应契约 ===')
-const today = callRoute('/dsh-token-usage/today')
+const today = await callRoute('/dsh-token-usage/today')
 check('/today ok=true', today.ok === true)
 check('/today 有 totals', typeof today.totals === 'object' && today.totals !== null)
 check('/today 有 allTime', typeof today.allTime === 'object' && today.allTime !== null)
@@ -169,7 +189,7 @@ check('/today 下发 config.keepDays（诊断区要显示）', Number.isFinite(t
 
 // ── ② /summary 契约 ───────────────────────────────────────────────────
 console.log('\n=== /summary 响应契约 ===')
-const summary = callRoute('/dsh-token-usage/summary', '?from=2026-01-01&to=2026-12-31')
+const summary = await callRoute('/dsh-token-usage/summary', '?from=2026-01-01&to=2026-12-31')
 check('/summary ok=true', summary.ok === true)
 check('/summary 有 rows 数组', Array.isArray(summary.rows))
 check('/summary 有 totals', typeof summary.totals === 'object')
@@ -184,9 +204,9 @@ check('/summary 回显 range.days', Number.isFinite(summary.range?.days))
 // 打开/关闭开关时行为一致。真正的数值回归由 test/fold.test.mjs 覆盖
 // （那里用造出来的数据断言了「关掉子会话后累计必须下降」）。
 console.log('\n=== allTime 过滤口径 ===')
-const withAll = callRoute('/dsh-token-usage/summary', '?from=2000-01-01&to=2099-12-31&includeSub=1&includeAux=1')
-const noSub = callRoute('/dsh-token-usage/summary', '?from=2000-01-01&to=2099-12-31&includeSub=0&includeAux=1')
-const noAux = callRoute('/dsh-token-usage/summary', '?from=2000-01-01&to=2099-12-31&includeSub=1&includeAux=0')
+const withAll = await callRoute('/dsh-token-usage/summary', '?from=2000-01-01&to=2099-12-31&includeSub=1&includeAux=1')
+const noSub = await callRoute('/dsh-token-usage/summary', '?from=2000-01-01&to=2099-12-31&includeSub=0&includeAux=1')
+const noAux = await callRoute('/dsh-token-usage/summary', '?from=2000-01-01&to=2099-12-31&includeSub=1&includeAux=0')
 
 check(
   '不限区间时 totals 与 allTime 一致（同一口径）',
@@ -216,7 +236,7 @@ check(
 // 桌宠是 root scope 的命令式 DOM，拿不到 session-scope 的 props，所以它问 host
 // 要「消耗最多的工作区」。这个端点为此存在：只回 top N，比 /summary 轻。
 console.log('\n=== /workspaces 契约 ===')
-const ws = callRoute('/dsh-token-usage/workspaces', '?limit=3')
+const ws = await callRoute('/dsh-token-usage/workspaces', '?limit=3')
 check('/workspaces ok=true', ws.ok === true)
 check('/workspaces 有 rows 数组', Array.isArray(ws.rows))
 check('/workspaces 有 total（未截断的总数）', Number.isFinite(ws.total))
@@ -234,15 +254,15 @@ for (const row of ws.rows) {
   )
 }
 // 不传 limit 时用默认 5。
-const wsDefault = callRoute('/dsh-token-usage/workspaces')
+const wsDefault = await callRoute('/dsh-token-usage/workspaces')
 check('/workspaces 默认 limit=5', wsDefault.rows.length <= 5, `rows=${wsDefault.rows.length}`)
 // from/to 范围参数被接受（主面板切「今日」时用）。
-const wsToday = callRoute('/dsh-token-usage/workspaces', '?from=2026-10-21&to=2026-10-21')
+const wsToday = await callRoute('/dsh-token-usage/workspaces', '?from=2026-10-21&to=2026-10-21')
 check('/workspaces 接受 from/to', wsToday.ok === true && Array.isArray(wsToday.rows))
 
 // ── ⑤ /prefs：运行时开关（横幅 / 桌宠 / 主面板） ─────────────────────
 console.log('\n=== /prefs 契约 ===')
-const prefsGet = callRoute('/dsh-token-usage/prefs')
+const prefsGet = await callRoute('/dsh-token-usage/prefs')
 check('/prefs GET ok=true', prefsGet.ok === true)
 check('/prefs 返回三个开关',
   prefsGet.prefs?.statusBar !== undefined
@@ -255,7 +275,7 @@ check('/prefs 默认：桌宠与主面板开，横幅关（内容已并入桌宠
   && prefsGet.prefs?.wallPanel === true,
   JSON.stringify(prefsGet.prefs))
 
-const prefsPut = callRoute('/dsh-token-usage/prefs', '', {
+const prefsPut = await callRoute('/dsh-token-usage/prefs', '', {
   method: 'PUT',
   body: JSON.stringify({ pet: false }),
 })
@@ -263,14 +283,14 @@ check('/prefs PUT ok=true', prefsPut.ok === true)
 check('/prefs PUT 后 pet=false', prefsPut.prefs?.pet === false)
 check('/prefs PUT 未提到的键保持不变', prefsPut.prefs?.statusBar === false)
 check('/prefs PUT 后再 GET 一致',
-  callRoute('/dsh-token-usage/prefs').prefs?.pet === false)
+  (await callRoute('/dsh-token-usage/prefs')).prefs?.pet === false)
 
 // 脏输入被拒绝或钳制，不能 500。
-const badJson = callRoute('/dsh-token-usage/prefs', '', { method: 'PUT', body: 'not json' })
+const badJson = await callRoute('/dsh-token-usage/prefs', '', { method: 'PUT', body: 'not json' })
 check('/prefs 拒绝非法 JSON', badJson.ok === false, `error=${badJson.error}`)
-const badType = callRoute('/dsh-token-usage/prefs', '', { method: 'PUT', body: '[1,2]' })
+const badType = await callRoute('/dsh-token-usage/prefs', '', { method: 'PUT', body: '[1,2]' })
 check('/prefs 拒绝非对象', badType.ok === false, `error=${badType.error}`)
-const wrongValue = callRoute('/dsh-token-usage/prefs', '', {
+const wrongValue = await callRoute('/dsh-token-usage/prefs', '', {
   method: 'PUT',
   body: JSON.stringify({ pet: 'yes' }),
 })
@@ -286,20 +306,20 @@ check('/summary 下发 prefs', summary.prefs !== undefined)
 // （`workbuddy/deepseek-v4.1-flash`、`deepseek-v4.1-flash-free`）。按原始
 // 模型名分组会把它拆成 4 行。这两个维度在 host 侧做归并。
 console.log('\n=== 归并维度（modelNorm / vendor）===')
-const byModelNorm = callRoute('/dsh-token-usage/summary', '?groupBy=modelNorm')
+const byModelNorm = await callRoute('/dsh-token-usage/summary', '?groupBy=modelNorm')
 check('/summary 接受 groupBy=modelNorm', byModelNorm.groupBy === 'modelNorm')
 check('modelNorm 行带 vendor 字段',
   byModelNorm.rows.every((r) => typeof r.vendor === 'string'))
 check('modelNorm 行带 variants 数组',
   byModelNorm.rows.every((r) => Array.isArray(r.variants)))
 
-const byVendor = callRoute('/dsh-token-usage/summary', '?groupBy=vendor')
+const byVendor = await callRoute('/dsh-token-usage/summary', '?groupBy=vendor')
 check('/summary 接受 groupBy=vendor', byVendor.groupBy === 'vendor')
 check('vendor 行带 label 与 models',
   byVendor.rows.every((r) => typeof r.label === 'string' && Array.isArray(r.models)))
 
 // 归并后总量必须与按天合计一致（不丢不重）。
-const byDay = callRoute('/dsh-token-usage/summary', '?groupBy=day')
+const byDay = await callRoute('/dsh-token-usage/summary', '?groupBy=day')
 const sumOf = (rows) => rows.reduce((a, r) => a + (Number(r.totals?.totalTokens) || 0), 0)
 check('modelNorm 合计 == 按天合计',
   sumOf(byModelNorm.rows) === sumOf(byDay.rows),
@@ -314,7 +334,7 @@ check('vendor 合计 == 按天合计',
 // 于是同一 (provider, model) 在不同工作区被拆成多行。实测本机 66 行里只有
 // 20 个真实组合。现在 rowKey 用独立的 ROW_SEP，同一组合必须只有一行。
 console.log('\n=== providerModel 不被 workspace 拆分 ===')
-const byPM = callRoute('/dsh-token-usage/summary', '?groupBy=providerModel')
+const byPM = await callRoute('/dsh-token-usage/summary', '?groupBy=providerModel')
 const pmKeys = byPM.rows.map((r) => `${r.provider}\u0000${r.model}`)
 check('providerModel 的 (provider, model) 不重复',
   new Set(pmKeys).size === pmKeys.length,
@@ -322,7 +342,7 @@ check('providerModel 的 (provider, model) 不重复',
 
 // ── ⑧ kind 分组只给枚举值（回归：host 曾下发中文文案） ────────────────
 console.log('\n=== kind 分组文案 ===')
-const byKind = callRoute('/dsh-token-usage/summary', '?groupBy=kind')
+const byKind = await callRoute('/dsh-token-usage/summary', '?groupBy=kind')
 check('/summary 接受 groupBy=kind', byKind.groupBy === 'kind')
 for (const row of byKind.rows) {
   check(

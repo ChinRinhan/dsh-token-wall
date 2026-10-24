@@ -13,6 +13,7 @@ lib/store.js      日聚合文档的读写与合并
 lib/prefs.js      运行时开关（独立于 Cordis config）
 lib/models.js     模型名归一化与归并
 lib/blocks.js     方块换算（10M 一格、100 格一页）
+lib/turns.js      逐轮/逐会话用量折叠（纯函数，host 侧）
 ```
 
 Host 与 Client 之间只有 HTTP 通信。Client 是手写的 `window.__ModuleLoader__.load({ id, factory })` bundle，**不能 import** `lib/**`——所以像方块换算这类逻辑在两边各有一份实现，靠 `test/blocks-cross.test.mjs` 逐字段比对防漂移。
@@ -217,7 +218,71 @@ profile 里已验证能拖的 `dsh-theme-tarkov` 桌宠根本不走 slot：它�
 
 方块换算（10M 一格、100 格一页）在 `lib/blocks.js` 与 `client.js` 里各有一份。两份漂移会导致「主面板说 68 块、桌宠说 67 块」这种最难查的不一致。
 
-`test/blocks-cross.test.mjs` 在**同一组输入**上分别跑两份、逐字段比对（桌宠侧比对充能比例与池内块数）。
+`test/blocks-cross.test.mjs` 在**同一组输入**上分别跑两份、逐字段比对（桌宠侧比对**池内块数**）。
+
+⚠️ 桌宠的进度条**已不再**参与这条跨端校验：它的语义从「10M 充能」换成了「上下文占用」（见下节），跟 `blockWall` 无关了。硬把它俩比在一起，会把新语义悄悄退回旧语义。上下文条由 `blocks-cross.test.mjs` 末尾一组独立断言覆盖。
+
+## 当前会话用量（桌宠）
+
+桌宠要回答「这次对话花了多少、上下文还剩多少」。这件事有三个真实的难点，每个都有明确取舍。
+
+### 难点一：桌宠问不出「当前会话是哪个」
+
+桌宠是 root scope 的命令式 DOM（挂在 `document.body` 上），拿不到 session-scope 的 props。而 **host 更不知道**——「UI 里选中了哪个会话」是纯客户端状态。
+
+唯一可靠的来源是一个 session-scope 的 slot 组件：它拿得到 `sessionId` prop。所以有 `SessionBridge`——一个**只写不画**的组件，注册在 `conversation.input.dock`，把 id 写进模块级 `focusStore`，桌宠轮询时把它作为 `?session=` 带上。
+
+三个刻意的选择：
+
+| 选择 | 理由 |
+|---|---|
+| 用**自己独立的 id** | slot 契约里「同 id 即替换」。复用 `-odometer` 会顶掉横幅那个条目 |
+| **不受 prefs 控制** | `statusBar` 默认 false。接在 `GatedOdometer` 里等于永远不推数据，**而且不报错** |
+| 只传 **sessionId 字符串**，不传数字 | 数字统一由 host 出。两处都算迟早不一致（本文档反复警告的那类事故） |
+
+### 难点二：拿到 id 之后，数据可能根本不在
+
+`ctx.sessions.get(id)` **只返回活会话**；重启后继续旧会话、或切到别的面板时它返回 `undefined`。所以 `sessionUsageOf()` 分三级降级，**任何一级都不许把「读不到」伪装成 0**：
+
+1. **活会话** → `sessionProjections.snapshot()`，便宜且实时；
+2. **冷会话** → `sessionQuery.observeSession(id, { projectionMode: 'all' })`，从磁盘折投影（首次要解日志，之后有缓存）。它返回的是**租约**，必须 `dispose()`；
+3. **都不可用** → 返回 `{ available: false, reason }`，客户端显示 `—`。
+
+之所以不自己维护一份「每会话合计」当兜底：回填确实能攒出一份，但它只在回填跑过时才有，且对**新会话**永远过期。第 2 级直接问宿主既更准也更省。
+
+### 难点三：逐轮读数 —— 这是相对 harness 的真正改进
+
+harness 自己的「本轮用量」是在**浏览器里**折的：ui-chat 把 `deriveTurnTokenUsage` 内联进 bundle，每次从原始事件重算一整轮。那个实现有一条我们不想继承的性质——**全有全无**：任一生命周期异常（缺 `step/end`、attempt 未闭合、`reasoningTokens > outputTokens`）就让整轮读数消失。
+
+而且它**只在轮次结束后**才出现，所以「本轮实时在涨」它做不到。
+
+我们的做法不同（`lib/turns.js`）：
+
+- `assistant/message` 事件**自带** `turn` / `step` / `usage`（实测 `turn=2 step=1`），增量累加即可，不重放历史 → **O(1)**；
+- **容错**：缺边界也能从任意一条带 usage 的消息起算，读数可能偏低，但不会消失；
+- 状态只存内存（有界 Map，最近 64 个会话）。「当前会话」在新开会话时本来就该归零，所以**不持久化**是对的。
+
+唯一需要小心的是**重试语义**：
+
+| 情况 | 语义 |
+|---|---|
+| 同一步骤、没有 `llm/retry-started` 的重复样本 | **替换**（同一笔调用的更好版本） |
+| `llm/retry-started` 之后的同一步骤样本 | **累加**（另一次计费尝试） |
+
+替换必须实现成「先撤旧样本、再加新样本」，**不能**先算差值再相加——差值路径一旦为负会被钳制吃掉，增量变 0，读数卡在旧值上。这条有单测锁着（`test/turn-fold.test.mjs`）。
+
+### 两个来源，口径不重叠
+
+| 读数 | 来源 | 为什么 |
+|---|---|---|
+| 本会话总量 | 宿主 `tokenUsage` 投影（退到我们自己折的） | 权威，含整份日志 |
+| 本轮 / 上一轮 | 我们自己的增量折叠 | harness 不提供，且我们能实时 |
+| 上下文占用 | 宿主 `contextPressure`（`projectedTokens ?? pressureTokens` / `contextWindow`） | 唯一**有后果**的进度：快满会被压缩 |
+| 池（N 块） | 本地日聚合，**全时累计** | 插件身份读数，只增不减 |
+
+⚠️ **池绝不能跟随会话**：一个会话通常只有 0.2 块，跟随就会长期显示「0 块」，彻底失去意义。
+
+⚠️ 上下文条的分母 `contextWindow` 必须来自宿主（实测有 1M 与 128K 两种），**不能写死**。
 
 ## 为什么不用 `llm/stream`
 

@@ -241,18 +241,21 @@ for (const total of CASES) {
     ok ? `filled=${expected.filled} partial@${states.indexOf('partial')}` : `client=${states.slice(0, 12).join(',')} lib=${expectedStates.slice(0, 12).join(',')}`)
 }
 
-console.log('\n=== 桌宠「充能块 + 池」vs lib/blocks.js ===')
+console.log('\n=== 桌宠「上下文条 + 池」vs lib/blocks.js ===')
 //
-// ⚠️ 桌宠**不再铺 30 格网格**：改成「单充能块 + 池」（见 client.js 的说明）。
-// 所以跨端校验的对象也变了——不再是 30 格三态序列，而是：
+// ⚠️ 桌宠的进度条**已经不再由 blockWall 驱动**：它现在是「上下文占用」
+// （`projectedTokens / contextWindow`，快满会被压缩），而池仍然是
+// 「全时累计块数」。所以跨端校验的对象只剩池：
 //
-// - 充能块的填充比例  ==  blockWall().progress
-// - 池里显示的块数    ==  blockWall().filled
+// - 池里显示的块数  ==  blockWall().filled
 //
 // 这仍是**跨端校验**：`lib/blocks.js` 是 host 侧实现，桌宠是客户端的手写
-// 命令式 DOM；两边对同一个 total 必须算出同样的进度与块数。
+// 命令式 DOM；两边对同一个 total 必须算出同样的块数。
+//
+// 进度条的新语义由本文件末尾的「上下文条」一组单独覆盖——它**不能**再和
+// blockWall 比对，否则会把「上下文占用」悄悄退回成「10M 进度」。
 
-/** 从桌宠 DOM 里取 { chargeWidth, poolText }。 */
+/** 从桌宠 DOM 里取 { chargeWidth, chargePct, poolText }。 */
 function petChargeAndPool(root) {
   const find = (cls, node = root) => {
     if (node === undefined) return undefined
@@ -261,9 +264,11 @@ function petChargeAndPool(root) {
     return undefined
   }
   const fill = find('dsh-tu-pet-charge-fill')
+  const pct = find('dsh-tu-pet-charge-pct')
   const label = find('dsh-tu-pet-pool-label')
   return {
     chargeWidth: fill?.style?.width ?? '',
+    chargePct: pct?._text ?? '',
     poolText: label?._text ?? '',
   }
 }
@@ -272,14 +277,86 @@ for (const total of [0, 5_000_000, 10_000_000, 65 * 10_000_000 + 704_221, 150 * 
   const w = libBlockWall(total)
   const petEl = await petRender(total)
   check(`pet total=${total.toLocaleString()} 已创建桌宠元素`, petEl !== undefined)
-  const { chargeWidth, poolText } = petChargeAndPool(petEl)
-  // 充能比例：client 写的是 `${(progress*100).toFixed(2)}%`。
-  const expectedWidth = `${(w.progress * 100).toFixed(2)}%`
-  check(`pet total=${total.toLocaleString()} 充能比例一致`, chargeWidth === expectedWidth,
-    `dom=${chargeWidth} lib=${expectedWidth}`)
+  const { chargeWidth, chargePct, poolText } = petChargeAndPool(petEl)
   // 池里显示的块数：client 写的是 `${filled} 块`。
   check(`pet total=${total.toLocaleString()} 池内块数一致`, poolText.startsWith(String(w.filled)),
     `dom=${JSON.stringify(poolText)} lib filled=${w.filled}`)
+  // 没有会话数据（这个 mock 不带 session）时，上下文条必须显式「不可用」，
+  // 而不是留一个看起来像 0% 的假进度。
+  check(`pet total=${total.toLocaleString()} 无会话数据时上下文条显示 —`,
+    chargeWidth === '0%' && chargePct === '—',
+    `width=${chargeWidth} pct=${chargePct}`)
+}
+
+console.log('\n=== 桌宠「上下文条」由 contextPressure 驱动（不是 10M 进度）===')
+//
+// 这条断言存在的理由：进度条从「10M 充能」换成「上下文占用」后，最容易发生的
+// 事故是**悄悄退回旧语义**——毕竟两条路径都写 `chargeFill.style.width`，
+// 单看代码很难发现喂进去的是哪个数。所以这里直接喂一份带 `contextPressure`
+// 的会话数据，断言宽度等于 `projectedTokens / contextWindow`。
+
+/** 带会话数据的 /today mock。 */
+function mockFetchWithSession({ total, sessionTokens, pressure }) {
+  globalThis.fetch = async () => ({
+    ok: true, status: 200,
+    json: async () => ({
+      ok: true, day: '2026-10-12',
+      yesterday: { day: '2026-10-11', totals: { totalTokens: 0 } },
+      totals: { totalTokens: 0 },
+      allTime: { totalTokens: total },
+      config: { statusBarEnabled: true, statusBarRefreshMs: 1000 },
+      session: {
+        id: 'sess-test',
+        live: { sessionTokens, turnTokens: 0, turn: 1, steps: 1 },
+        projected: {
+          tokenUsage: {
+            uncachedInputTokens: sessionTokens, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0,
+          },
+          contextPressure: pressure,
+        },
+      },
+    }),
+  })
+}
+
+async function petRenderWithSession(opts) {
+  mockFetchWithSession(opts)
+  const before = new Set(env.body.children)
+  instance.apply(makeCtx())
+  const created = env.body.children.find((c) => !before.has(c))
+  for (let i = 0; i < 16; i += 1) await Promise.resolve()
+  await new Promise((r) => setTimeout(r, 0))
+  return created
+}
+
+for (const { used, window: win } of [
+  { used: 32_000, window: 128_000 },   // 25%
+  { used: 710_000, window: 1_000_000 }, // 71%
+  { used: 0, window: 1_000_000 },       // 0%
+]) {
+  const el = await petRenderWithSession({
+    total: 500_000_000,
+    sessionTokens: 2_130_000,
+    pressure: { contextWindow: win, pressureTokens: used, projectedTokens: used },
+  })
+  const { chargeWidth, chargePct } = petChargeAndPool(el)
+  const expected = `${((used / win) * 100).toFixed(2)}%`
+  check(`上下文 ${used}/${win} 宽度 == projectedTokens/contextWindow`, chargeWidth === expected,
+    `dom=${chargeWidth} expected=${expected}`)
+  check(`上下文 ${used}/${win} 百分比文字`, chargePct === `${Math.round((used / win) * 100)}%`,
+    `dom=${chargePct}`)
+}
+
+// 没有 contextWindow 时不能瞎算——显示不可用。
+{
+  const el = await petRenderWithSession({
+    total: 500_000_000,
+    sessionTokens: 2_130_000,
+    pressure: { pressureTokens: 5000 }, // 缺 contextWindow
+  })
+  const { chargeWidth, chargePct } = petChargeAndPool(el)
+  check('缺 contextWindow 时不瞎算，显示 —', chargeWidth === '0%' && chargePct === '—',
+    `width=${chargeWidth} pct=${chargePct}`)
 }
 
 console.log(`\n结果: ${failures.length === 0 ? '全部一致 ✓' : `${failures.length} 处不一致 ✗`}`)

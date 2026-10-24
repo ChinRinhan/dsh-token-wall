@@ -85,14 +85,23 @@ function boot(config = {}) {
   }
   apply(ctx, config)
 
-  const call = (path, search = '') => {
+  /**
+   * 调用一个路由，返回解析后的 JSON。
+   *
+   * ⚠️ **async**：`/today` 的 handler 现在会 await（带 `session` 参数时要读宿主
+   * 投影，冷会话可能读盘）。响应在微任务里 `end()`，同步取只会拿到 undefined。
+   */
+  const call = async (path, search = '') => {
     const route = routes.find((r) => r.path === path)
     assert.notEqual(route, undefined, `未注册路由 ${path}`)
     let text
+    let resolveDone
+    const done = new Promise((resolve) => { resolveDone = resolve })
     route.handler({ url: `${path}${search}`, method: 'GET' }, {
       writeHead() {},
-      end(payload) { text = payload },
+      end(payload) { text = payload; resolveDone() },
     })
+    await done
     return JSON.parse(text)
   }
   const dispose = () => {
@@ -102,12 +111,12 @@ function boot(config = {}) {
   return { call, dispose, day }
 }
 
-test('/today 与 /summary 的 allTime 在两种口径下都一致', () => {
+test('/today 与 /summary 的 allTime 在两种口径下都一致', async () => {
   const { call, dispose } = boot()
   try {
     for (const flag of ['1', '0']) {
-      const today = call('/dsh-token-usage/today', `?includeSub=${flag}`)
-      const summary = call('/dsh-token-usage/summary', `?includeSub=${flag}&groupBy=day`)
+      const today = await call('/dsh-token-usage/today', `?includeSub=${flag}`)
+      const summary = await call('/dsh-token-usage/summary', `?includeSub=${flag}&groupBy=day`)
       assert.equal(today.ok, true)
       assert.equal(summary.ok, true)
       assert.equal(
@@ -127,11 +136,11 @@ test('/today 与 /summary 的 allTime 在两种口径下都一致', () => {
   }
 })
 
-test('关掉「含子会话」真的会让 /today 的读数变小（不是只影响 /summary）', () => {
+test('关掉「含子会话」真的会让 /today 的读数变小（不是只影响 /summary）', async () => {
   const { call, dispose } = boot()
   try {
-    const withSub = call('/dsh-token-usage/today')
-    const withoutSub = call('/dsh-token-usage/today', '?includeSub=0')
+    const withSub = await call('/dsh-token-usage/today')
+    const withoutSub = await call('/dsh-token-usage/today', '?includeSub=0')
     assert.equal(withSub.allTime.totalTokens, 1000, '默认计入子会话')
     assert.equal(withoutSub.allTime.totalTokens, 100, '关掉后只算主会话')
     assert.equal(withSub.totals.totalTokens, 1000)
@@ -144,10 +153,10 @@ test('关掉「含子会话」真的会让 /today 的读数变小（不是只影
   }
 })
 
-test('config 关掉 includeSubagents 时，查询参数无法把它打开（硬与）', () => {
+test('config 关掉 includeSubagents 时，查询参数无法把它打开（硬与）', async () => {
   const { call, dispose } = boot({ includeSubagents: false })
   try {
-    const body = call('/dsh-token-usage/today', '?includeSub=1')
+    const body = await call('/dsh-token-usage/today', '?includeSub=1')
     assert.equal(body.allTime.totalTokens, 100, '部署期关闭后，查询参数不能把它打开')
     assert.equal(body.config.includeSubagents, false)
   } finally {
